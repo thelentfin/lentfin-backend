@@ -21,7 +21,7 @@ const loanDisbursementRoutes = require("./routes/loanDisbursementRoutes");
 const loanCaseSmAsmRoutes = require("./routes/loancasesmasmroutes");
 const userRoutes = require("./routes/userroutes");
 const loanPaymentRoutes = require("./routes/loanPaymentRoutes");
-const notificationRoutes = require("./routes/notificationRoutes");
+const notificationRoutes = require("./routes/Notificationroutes");
 const adminForgetPasswordRoutes = require("./routes/adminForgetPassword");
 
 // ======================================================
