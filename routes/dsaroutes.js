@@ -2398,19 +2398,17 @@ router.post("/dsa/login", async (req, res) => {
 
     // ==================================================
     // STEP 2 - GET ONLY DSA USER
-    // IMPORTANT:
-    // DO NOT CHECK `users` TABLE HERE
     // ==================================================
 
     const dsaResult = await query(
       `
-        SELECT *
-        FROM dsa_users
-        WHERE email = ?
-        AND role = 'DSA'
-        LIMIT 1
+      SELECT *
+      FROM dsa_users
+      WHERE email = ?
+      AND role = 'DSA'
+      LIMIT 1
       `,
-      [email],
+      [email]
     );
 
     // ==================================================
@@ -2427,7 +2425,7 @@ router.post("/dsa/login", async (req, res) => {
     const dsa = dsaResult[0];
 
     // ==================================================
-    // STEP 4 - CHECK DSA STATUS
+    // STEP 4 - CHECK ACCOUNT STATUS
     // ==================================================
 
     if (String(dsa.status).toLowerCase() !== "active") {
@@ -2438,14 +2436,10 @@ router.post("/dsa/login", async (req, res) => {
     }
 
     // ==================================================
-    // STEP 5 - CHECK PASSWORD
-    // DSA passwords are bcrypt hashed
+    // STEP 5 - VERIFY PASSWORD
     // ==================================================
 
-    const passwordMatch = await bcrypt.compare(
-      password,
-      dsa.password,
-    );
+    const passwordMatch = await bcrypt.compare(password, dsa.password);
 
     if (!passwordMatch) {
       return res.status(401).json({
@@ -2455,30 +2449,33 @@ router.post("/dsa/login", async (req, res) => {
     }
 
     // ==================================================
-    // STEP 6 - CREATE DSA JWT
+    // STEP 6 - CREATE JWT TOKEN
     // ==================================================
 
     const token = jwt.sign(
       {
         id: dsa.id,
         role: "DSA",
+        username: (dsa.name || "").split(" ")[0],
       },
       process.env.JWT_SECRET,
       {
         expiresIn: "7h",
-      },
+      }
     );
 
     // ==================================================
-    // STEP 7 - SUCCESS
+    // STEP 7 - SUCCESS RESPONSE
     // ==================================================
 
     return res.status(200).json({
       status: true,
+      id: dsa.id,
       role: "DSA",
-      token: token,
-      email: dsa.email,
       name: dsa.name,
+      username: (dsa.name || "").split(" ")[0],
+      email: dsa.email,
+      token,
       must_change_password: Boolean(dsa.must_change_password),
       message: "DSA Login Success",
     });
@@ -2491,7 +2488,6 @@ router.post("/dsa/login", async (req, res) => {
     });
   }
 });
-
 
 
 
