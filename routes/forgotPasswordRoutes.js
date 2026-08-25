@@ -146,6 +146,11 @@ function sendOtpEmail(email, res) {
 
     subject: "Your Password Reset OTP",
 
+    // ==================================================
+    // NEW LINE ADDED — plain text version (fixes spam issue)
+    // ==================================================
+    text: `Your OTP is ${otp}. This OTP is valid for 5 minutes. If you did not request this, please ignore this email.`,
+
     html: `
             <div
                 style="
