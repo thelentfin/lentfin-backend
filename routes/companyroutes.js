@@ -49,13 +49,24 @@ router.post("/add-company", (req, res) => {
     db.query(
       insertQuery,
       [company_name, company_code, company_email, company_mobile, address],
-      (err) => {
+      (err, result) => {
         if (err) {
           return res.status(500).json({
             status: false,
             message: "Insert Error",
           });
         }
+        
+        // ==================================================
+        // SOCKET.IO EVENT
+        // ==================================================
+
+        const io = req.app.get("io");
+
+        io.to("admin").emit("dashboardUpdated", {
+          type: "companyAdded",
+          companyId: result.insertId,
+        });
 
         return res.json({
           status: true,
@@ -167,6 +178,17 @@ router.put("/update-company/:id", (req, res) => {
         });
       }
 
+      // ==================================================
+      // SOCKET.IO EVENT
+      // ==================================================
+
+      const io = req.app.get("io");
+
+      io.to("admin").emit("dashboardUpdated", {
+        type: "companyUpdated",
+        companyId: Number(id),
+      });
+
       return res.json({
         status: true,
         message: "Company Updated",
@@ -189,6 +211,17 @@ router.delete("/delete-company/:id", (req, res) => {
         message: "Delete Error",
       });
     }
+
+    // ==================================================
+    // SOCKET.IO EVENT
+    // ==================================================
+
+    const io = req.app.get("io");
+
+    io.to("admin").emit("dashboardUpdated", {
+      type: "companyDeleted",
+      companyId: Number(id),
+    });
 
     return res.json({
       status: true,

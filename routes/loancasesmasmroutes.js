@@ -173,7 +173,25 @@ router.post("/add", requireAuth, async (req, res) => {
       `,
       [case_id],
     );
+    // ==================================================
+    // SOCKET.IO EVENT
+    // ==================================================
 
+    const io = req.app.get("io");
+
+    // Admin Dashboard
+    io.to("admin").emit("dashboardUpdated", {
+      type: "smAsmAdded",
+      caseId: Number(case_id),
+    });
+
+    // Particular DSA Dashboard
+    if (loanCase.length > 0) {
+      io.to(`dsa_${loanCase[0].dsa_id}`).emit("dashboardUpdated", {
+        type: "smAsmAdded",
+        caseId: Number(case_id),
+      });
+    }
     return res.status(201).json({
       status: true,
       message: "SM and ASM details added successfully.",
