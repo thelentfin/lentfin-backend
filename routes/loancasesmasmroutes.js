@@ -80,7 +80,7 @@ router.post("/add", requireAuth, async (req, res) => {
 
     const [existingCase] = await db.promise().execute(
       `
-      SELECT id
+      SELECT id, dsa_id
       FROM loan_cases
       WHERE id = ?
       LIMIT 1
@@ -186,8 +186,8 @@ router.post("/add", requireAuth, async (req, res) => {
     });
 
     // Particular DSA Dashboard
-    if (loanCase.length > 0) {
-      io.to(`dsa_${loanCase[0].dsa_id}`).emit("dashboardUpdated", {
+    if (existingCase.length > 0 && existingCase[0].dsa_id) {
+      io.to(`dsa_${existingCase[0].dsa_id}`).emit("dashboardUpdated", {
         type: "smAsmAdded",
         caseId: Number(case_id),
       });
