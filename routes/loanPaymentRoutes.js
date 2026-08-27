@@ -379,6 +379,31 @@ router.post(
         entityType: "LOAN_CASE",
         entityId: validatedCaseId,
       });
+      // ==================================================
+      // SOCKET.IO EVENT
+      // ==================================================
+
+      const io = req.app.get("io");
+
+      // Admin Dashboard Refresh
+      io.to("admin").emit("dashboardUpdated", {
+        type: "paymentAdded",
+        caseId: validatedCaseId,
+        paymentId: insertResult.insertId,
+      });
+
+      // Particular DSA Dashboard Refresh
+      io.to(`dsa_${dsaId}`).emit("dashboardUpdated", {
+        type: "paymentAdded",
+        caseId: validatedCaseId,
+        paymentId: insertResult.insertId,
+      });
+
+      // Admin Notification Bell Refresh
+      io.to("admin").emit("newNotification", {
+        type: "DSA_CASE_SUBMITTED",
+        caseId: validatedCaseId,
+      });
 
       // ==================================================
       // STEP 14 - SUCCESS

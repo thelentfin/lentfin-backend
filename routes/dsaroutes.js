@@ -686,6 +686,34 @@ router.post(
         console.error("NOTIFICATION / EMAIL ERROR:", emailError);
       }
       // ==================================================
+      // SOCKET.IO EVENT
+      // ==================================================
+
+      const io = req.app.get("io");
+
+      // Admin dashboard refresh
+      io.to("admin").emit("dashboardUpdated", {
+        type: "dsaSignupRequest",
+        requestId,
+      });
+
+      // Corporate dashboard refresh
+      io.to("corporate").emit("dashboardUpdated", {
+        type: "dsaSignupRequest",
+        requestId,
+      });
+
+      // Live notification
+      io.to("admin").emit("newNotification", {
+        type: "DSA_SIGNUP_REQUEST",
+        requestId,
+      });
+
+      io.to("corporate").emit("newNotification", {
+        type: "DSA_SIGNUP_REQUEST",
+        requestId,
+      });
+      // ==================================================
       // 12. SUCCESS RESPONSE
       // ==================================================
 
@@ -1425,6 +1453,22 @@ router.put(
       }
 
       // ==================================================
+      // SOCKET.IO EVENT
+      // ==================================================
+
+      const io = req.app.get("io");
+
+      // Remove pending request from admin/corporate dashboard
+      io.to("admin").emit("dashboardUpdated", {
+        type: "dsaRequestRejected",
+        requestId: request.id,
+      });
+
+      io.to("corporate").emit("dashboardUpdated", {
+        type: "dsaRequestRejected",
+        requestId: request.id,
+      });
+      // ==================================================
       // 9. FINAL RESPONSE
       // ==================================================
 
@@ -2125,6 +2169,28 @@ router.put(
 
         emailError = emailSendError.message;
       }
+      // ==================================================
+      // SOCKET.IO EVENT
+      // ==================================================
+
+      const io = req.app.get("io");
+
+      // Admin dashboard
+      io.to("admin").emit("dashboardUpdated", {
+        type: "dsaVerified",
+        dsaId,
+      });
+
+      // Corporate dashboard
+      io.to("corporate").emit("dashboardUpdated", {
+        type: "dsaVerified",
+        dsaId,
+      });
+
+      // New DSA can receive future updates
+      io.to(`dsa_${dsaId}`).emit("accountVerified", {
+        dsaId,
+      });
 
       // ==================================================
       // 18. SUCCESS RESPONSE
@@ -2381,117 +2447,113 @@ router.get(
 // Admin users from the `users` table cannot login here.
 // ======================================================
 
-router.post("/dsa/login", async (req, res) => {
-  try {
-    const { email, password } = req.body;
+// router.post("/dsa/login", async (req, res) => {
+//   try {
+//     const { email, password } = req.body;
 
-    // ==================================================
-    // STEP 1 - VALIDATE INPUT
-    // ==================================================
+//     // ==================================================
+//     // STEP 1 - VALIDATE INPUT
+//     // ==================================================
 
-    if (!email || !password) {
-      return res.status(400).json({
-        status: false,
-        message: "Email and password are required",
-      });
-    }
+//     if (!email || !password) {
+//       return res.status(400).json({
+//         status: false,
+//         message: "Email and password are required",
+//       });
+//     }
 
-    // ==================================================
-    // STEP 2 - GET ONLY DSA USER
-    // IMPORTANT:
-    // DO NOT CHECK `users` TABLE HERE
-    // ==================================================
+//     // ==================================================
+//     // STEP 2 - GET ONLY DSA USER
+//     // ==================================================
 
-    const dsaResult = await query(
-      `
-        SELECT *
-        FROM dsa_users
-        WHERE email = ?
-        AND role = 'DSA'
-        LIMIT 1
-      `,
-      [email],
-    );
+//     const dsaResult = await query(
+//       `
+//       SELECT *
+//       FROM dsa_users
+//       WHERE email = ?
+//       AND role = 'DSA'
+//       LIMIT 1
+//       `,
+//       [email]
+//     );
 
-    // ==================================================
-    // STEP 3 - DSA NOT FOUND
-    // ==================================================
+//     // ==================================================
+//     // STEP 3 - DSA NOT FOUND
+//     // ==================================================
 
-    if (dsaResult.length === 0) {
-      return res.status(401).json({
-        status: false,
-        message: "Invalid DSA credentials",
-      });
-    }
+//     if (dsaResult.length === 0) {
+//       return res.status(401).json({
+//         status: false,
+//         message: "Invalid DSA credentials",
+//       });
+//     }
 
-    const dsa = dsaResult[0];
+//     const dsa = dsaResult[0];
 
-    // ==================================================
-    // STEP 4 - CHECK DSA STATUS
-    // ==================================================
+//     // ==================================================
+//     // STEP 4 - CHECK ACCOUNT STATUS
+//     // ==================================================
 
-    if (String(dsa.status).toLowerCase() !== "active") {
-      return res.status(403).json({
-        status: false,
-        message: `Your DSA account is ${dsa.status}`,
-      });
-    }
+//     if (String(dsa.status).toLowerCase() !== "active") {
+//       return res.status(403).json({
+//         status: false,
+//         message: `Your DSA account is ${dsa.status}`,
+//       });
+//     }
 
-    // ==================================================
-    // STEP 5 - CHECK PASSWORD
-    // DSA passwords are bcrypt hashed
-    // ==================================================
+//     // ==================================================
+//     // STEP 5 - VERIFY PASSWORD
+//     // ==================================================
 
-    const passwordMatch = await bcrypt.compare(
-      password,
-      dsa.password,
-    );
+//     const passwordMatch = await bcrypt.compare(password, dsa.password);
 
-    if (!passwordMatch) {
-      return res.status(401).json({
-        status: false,
-        message: "Invalid DSA credentials",
-      });
-    }
+//     if (!passwordMatch) {
+//       return res.status(401).json({
+//         status: false,
+//         message: "Invalid DSA credentials",
+//       });
+//     }
 
-    // ==================================================
-    // STEP 6 - CREATE DSA JWT
-    // ==================================================
+//     // ==================================================
+//     // STEP 6 - CREATE JWT TOKEN
+//     // ==================================================
 
-    const token = jwt.sign(
-      {
-        id: dsa.id,
-        role: "DSA",
-      },
-      process.env.JWT_SECRET,
-      {
-        expiresIn: "7h",
-      },
-    );
+//     const token = jwt.sign(
+//       {
+//         id: dsa.id,
+//         role: "DSA",
+//         username: (dsa.name || "").split(" ")[0],
+//       },
+//       process.env.JWT_SECRET,
+//       {
+//         expiresIn: "7h",
+//       }
+//     );
 
-    // ==================================================
-    // STEP 7 - SUCCESS
-    // ==================================================
+//     // ==================================================
+//     // STEP 7 - SUCCESS RESPONSE
+//     // ==================================================
 
-    return res.status(200).json({
-      status: true,
-      role: "DSA",
-      token: token,
-      email: dsa.email,
-      name: dsa.name,
-      must_change_password: Boolean(dsa.must_change_password),
-      message: "DSA Login Success",
-    });
-  } catch (error) {
-    console.error("DSA LOGIN ERROR:", error);
+//     return res.status(200).json({
+//       status: true,
+//       id: dsa.id,
+//       role: "DSA",
+//       name: dsa.name,
+//       username: (dsa.name || "").split(" ")[0],
+//       email: dsa.email,
+//       token,
+//       must_change_password: Boolean(dsa.must_change_password),
+//       message: "DSA Login Success",
+//     });
+//   } catch (error) {
+//     console.error("DSA LOGIN ERROR:", error);
 
-    return res.status(500).json({
-      status: false,
-      message: "Login failed",
-    });
-  }
-});
-
+//     return res.status(500).json({
+//       status: false,
+//       message: "Login failed",
+//     });
+//   }
+// });
 
 
 

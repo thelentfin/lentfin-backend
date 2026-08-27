@@ -4,58 +4,103 @@ const db = require("../db");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 
+const JWT_SECRET = process.env.JWT_SECRET;
+
+// ======================================================
+// TOKEN VERIFY MIDDLEWARE
+// ======================================================
+
+const verifyToken = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({
+      status: false,
+      message: "Token required",
+    });
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(401).json({
+        status: false,
+        message: "Token expired or invalid",
+      });
+    }
+
+    req.user = decoded;
+    next();
+  });
+};
+
+// ======================================================
+// LOGIN
+// ======================================================
+
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
-  // Check Admin Credentials
-
   const adminQuery = "SELECT * FROM users WHERE email = ?";
 
- db.query(adminQuery, [email], async (err, adminResult) => {
+  db.query(adminQuery, [email], async (err, adminResult) => {
     if (err) {
       return res.status(500).json({
         status: false,
         message: "Database Error",
       });
     }
-if (adminResult.length > 0) {
-  const admin = adminResult[0];
 
-  // Compare hashed password
-  let passwordMatch = false;
+    // ================= ADMIN LOGIN =================
 
-// If password is bcrypt hash
-if (admin.password.startsWith("$2")) {
-  passwordMatch = await bcrypt.compare(password, admin.password);
-} else {
-  // Support old plain-text passwords
-  passwordMatch = String(admin.password) === String(password);
-}
+    if (adminResult.length > 0) {
+      const admin = adminResult[0];
 
-if (passwordMatch) {
-    const token = jwt.sign(
-      {
-        id: admin.id,
-        role: admin.role,
-      },
-      process.env.JWT_SECRET,
-      {
-        expiresIn: "7h",
+      // Account Status Check
+      if (admin.status === "Inactive") {
+        return res.status(403).json({
+          status: false,
+          message: "Your account is inactive.",
+        });
       }
-    );
 
-    return res.json({
-      status: true,
-      name: admin.name,
-      email: admin.email,
-      role: admin.role,
-      token,
-      message: "Admin Login Success",
-    });
-  }
-}
+      let passwordMatch = false;
 
-    // CHECK DSA TABLE
+      // Support bcrypt + old plain text passwords
+      if (admin.password.startsWith("$2")) {
+        passwordMatch = await bcrypt.compare(password, admin.password);
+      } else {
+        passwordMatch = String(admin.password) === String(password);
+      }
+
+      if (passwordMatch) {
+        const token = jwt.sign(
+          {
+            id: admin.id,
+            role: admin.role,
+            username: (admin.name || "").split(" ")[0],
+          },
+          JWT_SECRET,
+          {
+            expiresIn: "5h",
+          },
+        );
+
+        return res.status(200).json({
+          status: true,
+          id: admin.id,
+          name: admin.name,
+          username: (admin.name || "").split(" ")[0],
+          email: admin.email,
+          role: admin.role,
+          token,
+          message: "Admin Login Success",
+        });
+      }
+    }
+
+    // ================= DSA LOGIN =================
 
     const dsaQuery = "SELECT * FROM dsa_users WHERE email = ?";
 
@@ -70,7 +115,14 @@ if (passwordMatch) {
       if (dsaResult.length > 0) {
         const dsa = dsaResult[0];
 
-        // Bcrypt password comparison for DSA
+        // DSA Status Check (only if status column exists)
+        if (dsa.status && dsa.status === "Inactive") {
+          return res.status(403).json({
+            status: false,
+            message: "Your account is inactive.",
+          });
+        }
+
         const passwordMatch = await bcrypt.compare(password, dsa.password);
 
         if (passwordMatch) {
@@ -78,25 +130,28 @@ if (passwordMatch) {
             {
               id: dsa.id,
               role: dsa.role,
+              username: (dsa.name || "").split(" ")[0],
             },
-            process.env.JWT_SECRET,
+            JWT_SECRET,
             {
-              expiresIn: "7h",
+              expiresIn: "5h",
             },
           );
 
-          return res.json({
+          return res.status(200).json({
             status: true,
+            id: dsa.id,
+            username: (dsa.name || "").split(" ")[0],
             role: dsa.role,
-            token: token,
+            token,
             message: "DSA Login Success",
           });
         }
       }
 
-      // INVALID
+      // Invalid Credentials
 
-      return res.json({
+      return res.status(401).json({
         status: false,
         message: "Invalid Credentials",
       });
@@ -104,63 +159,57 @@ if (passwordMatch) {
   });
 });
 
+// ======================================================
+// ADD USER
+// ======================================================
+
 router.post("/add", (req, res) => {
   try {
     const { name, email, password, role } = req.body;
 
-    // CHECK EMAIL EXISTS
-
     const checkQuery = "SELECT * FROM users WHERE email = ?";
 
-   db.query(checkQuery, [email], async (err, result) => {
-     if (err) {
-       console.log(err);
+    db.query(checkQuery, [email], async (err, result) => {
+      if (err) {
+        console.log(err);
 
-       return res.status(500).json({
-         status: false,
-         message: "Database Error",
-       });
-     }
+        return res.status(500).json({
+          status: false,
+          message: "Database Error",
+        });
+      }
 
-     // EMAIL ALREADY EXISTS
+      if (result.length > 0) {
+        return res.status(409).json({
+          status: false,
+          message: "Email Already Exists",
+        });
+      }
 
-     if (result.length > 0) {
-       return res.json({
-         status: false,
-         message: "Email Already Exists",
-       });
-     }
+      const hashedPassword = await bcrypt.hash(password, 10);
 
-     // INSERT QUERY (Plain-text password)
+      const insertQuery = `
+        INSERT INTO users
+        (name, email, password, role)
+        VALUES (?, ?, ?, ?)
+      `;
 
-     const insertQuery = `
-                INSERT INTO users
-                (name, email, password, role)
-                VALUES (?, ?, ?, ?)
-            `;
+      db.query(insertQuery, [name, email, hashedPassword, role], (err) => {
+        if (err) {
+          console.log(err);
 
-     const hashedPassword = await bcrypt.hash(password, 10);
+          return res.status(500).json({
+            status: false,
+            message: "Insert Error",
+          });
+        }
 
-     db.query(
-       insertQuery,
-       [name, email, hashedPassword, role],
-       (err, insertResult) => {
-         if (err) {
-           console.log(err);
-
-           return res.status(500).json({
-             status: false,
-             message: "Insert Error",
-           });
-         }
-
-         return res.json({
-           status: true,
-           message: "Registration Successful",
-         });
-       },
-     );
-   });
+        return res.status(201).json({
+          status: true,
+          message: "Registration Successful",
+        });
+      });
+    });
   } catch (error) {
     console.log(error);
 
@@ -172,3 +221,4 @@ router.post("/add", (req, res) => {
 });
 
 module.exports = router;
+module.exports.verifyToken = verifyToken;

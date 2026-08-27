@@ -548,6 +548,25 @@ router.post(
         `,
         [createdDisbursementId, dsaId],
       );
+      // ==================================================
+      // SOCKET.IO EVENT
+      // ==================================================
+
+      const io = req.app.get("io");
+
+      // Admin Dashboard Refresh
+      io.to("admin").emit("dashboardUpdated", {
+        type: "disbursementAdded",
+        caseId: validatedCaseId,
+        disbursementId: createdDisbursementId,
+      });
+
+      // Particular DSA Dashboard Refresh
+      io.to(`dsa_${dsaId}`).emit("dashboardUpdated", {
+        type: "disbursementAdded",
+        caseId: validatedCaseId,
+        disbursementId: createdDisbursementId,
+      });
 
       // ==================================================
       // STEP 19 - SUCCESS

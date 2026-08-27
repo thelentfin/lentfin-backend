@@ -80,7 +80,7 @@ router.post("/add", requireAuth, async (req, res) => {
 
     const [existingCase] = await db.promise().execute(
       `
-      SELECT id
+      SELECT id, dsa_id
       FROM loan_cases
       WHERE id = ?
       LIMIT 1
@@ -173,7 +173,25 @@ router.post("/add", requireAuth, async (req, res) => {
       `,
       [case_id],
     );
+    // ==================================================
+    // SOCKET.IO EVENT
+    // ==================================================
 
+    const io = req.app.get("io");
+
+    // Admin Dashboard
+    io.to("admin").emit("dashboardUpdated", {
+      type: "smAsmAdded",
+      caseId: Number(case_id),
+    });
+
+    // Particular DSA Dashboard
+    if (existingCase.length > 0 && existingCase[0].dsa_id) {
+      io.to(`dsa_${existingCase[0].dsa_id}`).emit("dashboardUpdated", {
+        type: "smAsmAdded",
+        caseId: Number(case_id),
+      });
+    }
     return res.status(201).json({
       status: true,
       message: "SM and ASM details added successfully.",

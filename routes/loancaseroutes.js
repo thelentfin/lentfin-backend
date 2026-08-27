@@ -612,7 +612,23 @@ router.post(
           `,
         [createdCaseId],
       );
+      // ==================================================
+      // SOCKET.IO EVENT
+      // ==================================================
 
+      const io = req.app.get("io");
+
+      // Admin dashboard refresh
+      io.to("admin").emit("dashboardUpdated", {
+        type: "loanCreated",
+        caseId: createdCaseId,
+      });
+
+      // Particular DSA dashboard refresh
+      io.to(`dsa_${dsaId}`).emit("dashboardUpdated", {
+        type: "loanCreated",
+        caseId: createdCaseId,
+      });
       // ==================================================
       // STEP 25
       // SUCCESS
@@ -1337,13 +1353,13 @@ router.put(
       // ==========================================
 
       const userRole = String(
-        req.user.role || req.user.user_role || ""
+        req.user.role || req.user.user_role || "",
       ).toLowerCase();
 
       if (userRole !== "admin") {
         return res.status(403).json({
           status: false,
-          message: "Only admin can update case status."
+          message: "Only admin can update case status.",
         });
       }
 
@@ -1354,7 +1370,7 @@ router.put(
       if (!["ACCEPTED", "REJECTED"].includes(status)) {
         return res.status(400).json({
           status: false,
-          message: "Status must be ACCEPTED or REJECTED."
+          message: "Status must be ACCEPTED or REJECTED.",
         });
       }
 
@@ -1364,18 +1380,18 @@ router.put(
 
       const [caseResult] = await db.promise().execute(
         `
-        SELECT id,status
+        SELECT id,status,dsa_id
         FROM loan_cases
         WHERE id=?
         LIMIT 1
         `,
-        [case_id]
+        [case_id],
       );
 
       if (caseResult.length === 0) {
         return res.status(404).json({
           status: false,
-          message: "Loan case not found."
+          message: "Loan case not found.",
         });
       }
 
@@ -1384,7 +1400,7 @@ router.put(
       if (caseResult[0].status !== "SUBMITTED") {
         return res.status(400).json({
           status: false,
-          message: "Only submitted cases can be reviewed."
+          message: "Only submitted cases can be reviewed.",
         });
       }
 
@@ -1405,12 +1421,29 @@ router.put(
         [
           status,
           req.user.id,
-          status === "REJECTED"
-            ? (reject_reason || null)
-            : null,
-          case_id
-        ]
+          status === "REJECTED" ? reject_reason || null : null,
+          case_id,
+        ],
       );
+      // ==================================================
+      // SOCKET.IO EVENT
+      // ==================================================
+
+      const io = req.app.get("io");
+
+      // Admin Dashboard
+      io.to("admin").emit("dashboardUpdated", {
+        type: "loanStatusChanged",
+        caseId: Number(case_id),
+        status,
+      });
+
+      // Particular DSA Dashboard
+      io.to(`dsa_${caseResult[0].dsa_id}`).emit("dashboardUpdated", {
+        type: "loanStatusChanged",
+        caseId: Number(case_id),
+        status,
+      });
 
       // ==========================================
       // RESPONSE
@@ -1418,9 +1451,8 @@ router.put(
 
       return res.json({
         status: true,
-        message: `Loan case ${status.toLowerCase()} successfully.`
+        message: `Loan case ${status.toLowerCase()} successfully.`,
       });
-
     } catch (error) {
 
       console.error(error);
