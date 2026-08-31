@@ -47,6 +47,9 @@ const loanPaymentRoutes = require("./routes/loanPaymentRoutes");
 const notificationRoutes = require("./routes/Notificationroutes");
 const adminForgetPasswordRoutes = require("./routes/adminForgetPassword");
 const dashboardRoutes = require("./routes/dashboardroutes");
+const dsaForgetPasswordRoutes = require("./routes/dsaForgetPassword");
+
+
 
 // ======================================================
 // CORS
@@ -89,7 +92,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/admin", adminForgetPasswordRoutes);
 app.use("/api/dashboard", dashboardRoutes);
-
+app.use("/api/dsa-password", dsaForgetPasswordRoutes);
 // ======================================================
 // SERVER START
 // ======================================================
