@@ -3,6 +3,11 @@ const router = express.Router();
 const db = require("../db");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
+const {
+  checkLoginCooldown,
+  recordFailedLogin,
+  clearFailedLogin,
+} = require("../middleware/rateLimiter");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -39,7 +44,7 @@ const verifyToken = (req, res, next) => {
 // LOGIN
 // ======================================================
 
-router.post("/login", async (req, res) => {
+router.post("/login", checkLoginCooldown, async (req, res) => {
   const { email, password } = req.body;
 
   const adminQuery = "SELECT * FROM users WHERE email = ?";
@@ -75,6 +80,8 @@ router.post("/login", async (req, res) => {
       }
 
       if (passwordMatch) {
+        clearFailedLogin(req);
+
         const token = jwt.sign(
           {
             id: admin.id,
@@ -126,6 +133,8 @@ router.post("/login", async (req, res) => {
         const passwordMatch = await bcrypt.compare(password, dsa.password);
 
         if (passwordMatch) {
+          clearFailedLogin(req);
+
           const token = jwt.sign(
             {
               id: dsa.id,
@@ -150,6 +159,8 @@ router.post("/login", async (req, res) => {
       }
 
       // Invalid Credentials
+
+      recordFailedLogin(req);
 
       return res.status(401).json({
         status: false,

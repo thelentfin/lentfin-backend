@@ -9,6 +9,7 @@ require("dotenv").config();
 const { initializeSocket } = require("./config/socket");
 
 const app = express();
+app.set("trust proxy", 1);
 const server = http.createServer(app);
 
 // ======================================================
