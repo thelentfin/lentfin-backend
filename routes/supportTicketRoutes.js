@@ -12,6 +12,7 @@ const requireAuth = authenticateAndAuthorize();
 
 // ======================================================
 // MULTER (FIXED)
+// Allowed: JPG, JPEG, PNG, PDF only | Max size: 5MB | Max files: 5
 // ======================================================
 
 const storage = multer.memoryStorage();
@@ -19,7 +20,7 @@ const storage = multer.memoryStorage();
 const upload = multer({
   storage,
   limits: {
-    fileSize: 10 * 1024 * 1024,
+    fileSize: 5 * 1024 * 1024,
     files: 5,
   },
 
@@ -27,15 +28,9 @@ const upload = multer({
     console.log("Original Name:", file.originalname);
     console.log("Mime Type:", file.mimetype);
 
-    const allowedMime = [
-      "image/jpeg",
-      "image/png",
-      "image/webp",
-      "application/pdf",
-      "application/octet-stream",
-    ];
+    const allowedMime = ["image/jpeg", "image/png", "application/pdf"];
 
-    const allowedExt = [".jpg", ".jpeg", ".png", ".webp", ".pdf"];
+    const allowedExt = [".jpg", ".jpeg", ".png", ".pdf"];
 
     const ext = path.extname(file.originalname).toLowerCase();
 
@@ -43,9 +38,7 @@ const upload = multer({
       return cb(null, true);
     }
 
-    return cb(
-      new Error("Only JPG, JPEG, PNG, WEBP and PDF files are allowed."),
-    );
+    return cb(new Error("Only JPG, JPEG, PNG and PDF files are allowed."));
   },
 });
 
@@ -379,105 +372,453 @@ router.post("/create", requireAuth, (req, res) => {
 });
 
 // ======================================================
-// DSA MY TICKETS
+// ======================================================
+// DSA MY TICKETS WITH DOCUMENTS
 // GET /api/support-ticket/my-tickets
 // ======================================================
 
 router.get("/my-tickets", requireAuth, async (req, res) => {
   try {
-    // Only DSA can access
+
+    // ==================================================
+    // ONLY DSA CAN ACCESS
+    // ==================================================
+
     if (req.user.role !== "DSA") {
       return res.status(403).json({
         status: false,
-        message: "Only DSA can view own tickets.",
+        message: "Only DSA can view own tickets."
       });
     }
+
+    // ==================================================
+    // GET DSA TICKETS
+    // ==================================================
 
     const [rows] = await db.promise().execute(
       `
       SELECT
+
         st.id,
         st.ticket_number,
         st.case_id,
         st.issue_type,
         st.description,
         st.status,
+        st.created_by,
         st.created_at,
-        lc.case_number,
-        lc.customer_name
+        st.updated_at,
+
+        d.id AS dsa_id,
+        d.dsa_code,
+        d.name AS dsa_name,
+        d.email,
+        d.mobile,
+
+        c.company_name
+
       FROM support_tickets st
-      INNER JOIN loan_cases lc
-        ON st.case_id = lc.id
+
+      INNER JOIN dsa_users d
+        ON st.dsa_id = d.id
+
+      LEFT JOIN companies c
+        ON d.company_id = c.id
+
       WHERE st.dsa_id = ?
+
       ORDER BY st.created_at DESC
       `,
       [req.user.id]
     );
 
+    // ==================================================
+    // GET ALL DOCUMENTS
+    // ==================================================
+
+    const ticketIds = rows.map(ticket => ticket.id);
+
+    let attachments = [];
+
+    if (ticketIds.length > 0) {
+
+      const [files] = await db.promise().query(
+        `
+        SELECT
+
+          id,
+          ticket_id,
+          file_name,
+          file_url,
+          file_type,
+          public_id,
+          created_at
+
+        FROM support_ticket_attachments
+
+        WHERE ticket_id IN (?)
+
+        ORDER BY id ASC
+        `,
+        [ticketIds]
+      );
+
+      attachments = files;
+    }
+
+    // ==================================================
+    // FINAL RESPONSE
+    // ==================================================
+
+    const data = rows.map(ticket => ({
+
+      ticket: {
+        id: ticket.id,
+        ticket_number: ticket.ticket_number,
+        case_id: ticket.case_id,
+        issue_type: ticket.issue_type,
+        description: ticket.description,
+        status: ticket.status,
+        created_by: ticket.created_by,
+        created_at: ticket.created_at,
+        updated_at: ticket.updated_at
+      },
+
+      dsa: {
+        id: ticket.dsa_id,
+        dsa_code: ticket.dsa_code,
+        name: ticket.dsa_name,
+        email: ticket.email,
+        mobile: ticket.mobile,
+        company_name: ticket.company_name
+      },
+
+      attachments: attachments.filter(
+        file => file.ticket_id === ticket.id
+      )
+
+    }));
+
     return res.status(200).json({
       status: true,
       message: "My support tickets fetched successfully.",
-      count: rows.length,
-      data: rows,
+      count: data.length,
+      data
     });
 
   } catch (error) {
+
     console.error("MY TICKETS ERROR:", error);
 
     return res.status(500).json({
       status: false,
       message: "Failed to fetch support tickets.",
-      error: error.message,
+      error: error.message
     });
+
   }
+
 });
 
 // ======================================================
-// CORPORATE / ADMIN ALL TICKETS
+// ADMIN / CORPORATE DSA ALL TICKETS WITH DOCUMENTS
 // GET /api/support-ticket/all
 // ======================================================
 
 router.get("/all", requireAuth, async (req, res) => {
   try {
 
-    // Security Fix
+    // ===========================================
+    // ROLE CHECK
+    // ===========================================
+
     if (
       req.user.role !== "admin" &&
       req.user.role !== "Corporate DSA"
     ) {
       return res.status(403).json({
         status: false,
-        message: "Access denied.",
+        message: "Access denied."
       });
     }
 
+    // ===========================================
+    // GET ALL TICKETS
+    // ===========================================
+
     const [rows] = await db.promise().query(`
       SELECT
-        st.*,
-        lc.case_number,
-        lc.customer_name,
-        d.name AS dsa_name
+
+        st.id,
+        st.ticket_number,
+        st.case_id,
+        st.issue_type,
+        st.description,
+        st.status,
+        st.created_by,
+        st.closed_by,
+        st.closed_reason,
+        st.closed_at,
+        st.created_at,
+        st.updated_at,
+
+        d.id AS dsa_id,
+        d.dsa_code,
+        d.name AS dsa_name,
+        d.email,
+        d.mobile,
+
+        c.company_name
+
       FROM support_tickets st
-      LEFT JOIN loan_cases lc
-        ON st.case_id = lc.id
+
       LEFT JOIN dsa_users d
         ON st.dsa_id = d.id
+
+      LEFT JOIN companies c
+        ON d.company_id = c.id
+
       ORDER BY st.created_at DESC
     `);
 
+    // ===========================================
+    // GET ALL ATTACHMENTS
+    // ===========================================
+
+    const ticketIds = rows.map(ticket => ticket.id);
+
+    let attachments = [];
+
+    if (ticketIds.length > 0) {
+
+      const [files] = await db.promise().query(`
+        SELECT
+
+          id,
+          ticket_id,
+          file_name,
+          file_url,
+          file_type,
+          public_id,
+          created_at
+
+        FROM support_ticket_attachments
+
+        WHERE ticket_id IN (?)
+
+        ORDER BY id ASC
+      `, [ticketIds]);
+
+      attachments = files;
+    }
+
+    // ===========================================
+    // FINAL RESPONSE
+    // ===========================================
+
+    const data = rows.map(ticket => ({
+
+      ticket: {
+        id: ticket.id,
+        ticket_number: ticket.ticket_number,
+        case_id: ticket.case_id,
+        issue_type: ticket.issue_type,
+        description: ticket.description,
+        status: ticket.status,
+        created_by: ticket.created_by,
+        closed_by: ticket.closed_by,
+        closed_reason: ticket.closed_reason,
+        closed_at: ticket.closed_at,
+        created_at: ticket.created_at,
+        updated_at: ticket.updated_at
+      },
+
+      dsa: {
+        id: ticket.dsa_id,
+        dsa_code: ticket.dsa_code,
+        name: ticket.dsa_name,
+        email: ticket.email,
+        mobile: ticket.mobile,
+        company_name: ticket.company_name
+      },
+
+      attachments: attachments.filter(
+        file => file.ticket_id === ticket.id
+      )
+
+    }));
+
     return res.status(200).json({
       status: true,
-      count: rows.length,
-      data: rows,
+      message: "All support tickets fetched successfully.",
+      count: data.length,
+      data
     });
 
   } catch (error) {
+
     console.error("ALL TICKETS ERROR:", error);
 
     return res.status(500).json({
       status: false,
-      message: error.message,
+      message: "Failed to fetch support tickets.",
+      error: error.message
     });
+
+  }
+});
+
+// ======================================================
+// DSA GET OWN TICKET BY TICKET ID WITH DOCUMENTS
+// GET /api/support-ticket/my-ticket/:ticketId
+// ======================================================
+
+router.get("/my-ticket/:ticketId", requireAuth, async (req, res) => {
+  try {
+
+    // ==================================================
+    // ONLY DSA CAN ACCESS
+    // ==================================================
+
+    if (req.user.role !== "DSA") {
+      return res.status(403).json({
+        status: false,
+        message: "Only DSA can access."
+      });
+    }
+
+    const { ticketId } = req.params;
+
+    // ==================================================
+    // VALIDATE TICKET ID
+    // ==================================================
+
+    if (!Number.isInteger(Number(ticketId)) || Number(ticketId) <= 0) {
+      return res.status(400).json({
+        status: false,
+        message: "Invalid ticket ID."
+      });
+    }
+
+    // ==================================================
+    // GET PARTICULAR DSA OWN TICKET
+    // ==================================================
+
+    const [ticket] = await db.promise().execute(
+      `
+      SELECT
+
+        st.id,
+        st.ticket_number,
+        st.case_id,
+        st.issue_type,
+        st.description,
+        st.status,
+        st.created_by,
+        st.closed_by,
+        st.closed_reason,
+        st.closed_at,
+        st.created_at,
+        st.updated_at,
+
+        d.id AS dsa_id,
+        d.dsa_code,
+        d.name AS dsa_name,
+        d.email,
+        d.mobile,
+
+        c.company_name
+
+      FROM support_tickets st
+
+      INNER JOIN dsa_users d
+        ON st.dsa_id = d.id
+
+      LEFT JOIN companies c
+        ON d.company_id = c.id
+
+      WHERE st.id = ?
+        AND st.dsa_id = ?
+
+      LIMIT 1
+      `,
+      [ticketId, req.user.id]
+    );
+
+    if (!ticket.length) {
+      return res.status(404).json({
+        status: false,
+        message: "Support ticket not found."
+      });
+    }
+
+    // ==================================================
+    // GET TICKET DOCUMENTS
+    // ==================================================
+
+    const [attachments] = await db.promise().execute(
+      `
+      SELECT
+        id,
+        ticket_id,
+        file_name,
+        file_url,
+        file_type,
+        public_id,
+        created_at
+      FROM support_ticket_attachments
+      WHERE ticket_id = ?
+      ORDER BY id ASC
+      `,
+      [ticketId]
+    );
+
+    // ==================================================
+    // RESPONSE
+    // ==================================================
+
+    return res.status(200).json({
+      status: true,
+      message: "Support ticket fetched successfully.",
+      data: {
+        ticket: {
+          id: ticket[0].id,
+          ticket_number: ticket[0].ticket_number,
+          case_id: ticket[0].case_id,
+          issue_type: ticket[0].issue_type,
+          description: ticket[0].description,
+          status: ticket[0].status,
+          created_by: ticket[0].created_by,
+          closed_by: ticket[0].closed_by,
+          closed_reason: ticket[0].closed_reason,
+          closed_at: ticket[0].closed_at,
+          created_at: ticket[0].created_at,
+          updated_at: ticket[0].updated_at
+        },
+
+        dsa: {
+          id: ticket[0].dsa_id,
+          dsa_code: ticket[0].dsa_code,
+          name: ticket[0].dsa_name,
+          email: ticket[0].email,
+          mobile: ticket[0].mobile,
+          company_name: ticket[0].company_name
+        },
+
+        attachments
+      }
+    });
+
+  } catch (error) {
+
+    console.error("GET TICKET ERROR:", error);
+
+    return res.status(500).json({
+      status: false,
+      message: "Failed to fetch support ticket.",
+      error: error.message
+    });
+
   }
 });
 
@@ -494,10 +835,7 @@ router.put("/:ticketId/resolve", requireAuth, async (req, res) => {
     const { closed_reason } = req.body;
 
     // Only Corporate DSA / Admin
-    if (
-      req.user.role !== "admin" &&
-      req.user.role !== "Corporate DSA"
-    ) {
+    if (req.user.role !== "admin" && req.user.role !== "Corporate DSA") {
       return res.status(403).json({
         status: false,
         message: "Only Corporate DSA or Admin can resolve support ticket.",
@@ -535,7 +873,7 @@ router.put("/:ticketId/resolve", requireAuth, async (req, res) => {
       WHERE id = ?
       LIMIT 1
       `,
-      [ticketId]
+      [ticketId],
     );
 
     if (!tickets.length) {
@@ -575,11 +913,7 @@ router.put("/:ticketId/resolve", requireAuth, async (req, res) => {
         closed_at = NOW()
       WHERE id = ?
       `,
-      [
-        req.user.id,
-        closed_reason.trim(),
-        ticketId,
-      ]
+      [req.user.id, closed_reason.trim(), ticketId],
     );
 
     await connection.commit();
@@ -613,7 +947,6 @@ router.put("/:ticketId/resolve", requireAuth, async (req, res) => {
         resolved_reason: closed_reason.trim(),
       },
     });
-
   } catch (error) {
     await connection.rollback();
 
