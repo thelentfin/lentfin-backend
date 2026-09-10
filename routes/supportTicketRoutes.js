@@ -80,7 +80,7 @@ router.post("/create", requireAuth, (req, res) => {
       }
 
       const dsaId = req.user.id;
-      const { case_id, issue_type, description } = req.body;
+      const { case_id, issue_type, description, category } = req.body;
 
       // Validation
 
@@ -90,6 +90,20 @@ router.post("/create", requireAuth, (req, res) => {
         return res.status(400).json({
           status: false,
           message: "case_id, issue_type and description are required.",
+        });
+      }
+
+      // Category Validation
+
+      const allowedCategories = ["GENERAL_SUPPORT", "CUSTOMER_APPLICATION"];
+
+      if (!category || !allowedCategories.includes(category)) {
+        await connection.rollback();
+
+        return res.status(400).json({
+          status: false,
+          message:
+            "Valid category is required. Allowed: GENERAL_SUPPORT or CUSTOMER_APPLICATION.",
         });
       }
 
@@ -183,18 +197,27 @@ router.post("/create", requireAuth, (req, res) => {
       const [insertResult] = await connection.execute(
         `
         INSERT INTO support_tickets
-        (
+(
+  case_id,
+  dsa_id,
+  company_id,
+  category,
+  issue_type,
+  description,
+  status,
+  created_by
+)
+VALUES(?,?,?,?,?,?,'OPEN',?)
+        `,
+        [
           case_id,
-          dsa_id,
-          company_id,
+          dsaId,
+          loanCase.company_id,
+          category,
           issue_type,
           description,
-          status,
-          created_by
-        )
-        VALUES(?,?,?,?,?,'OPEN',?)
-        `,
-        [case_id, dsaId, loanCase.company_id, issue_type, description, dsaId],
+          dsaId,
+        ],
       );
 
       const ticketId = insertResult.insertId;
@@ -282,6 +305,7 @@ router.post("/create", requireAuth, (req, res) => {
             <tr><td><b>Email</b></td><td>${loanCase.email}</td></tr>
             <tr><td><b>Mobile</b></td><td>${loanCase.mobile}</td></tr>
             <tr><td><b>Issue</b></td><td>${issue_type}</td></tr>
+            <tr><td><b>Category</b></td><td>${category}</td></tr>
             <tr><td><b>Description</b></td><td>${description}</td></tr>
           </table>
           `,
@@ -331,6 +355,7 @@ router.post("/create", requireAuth, (req, res) => {
           ticket: {
             ticket_id: ticketId,
             ticket_number: ticketNumber,
+            category,
             status: "OPEN",
             issue_type,
             description,
@@ -402,6 +427,7 @@ router.get("/my-tickets", requireAuth, async (req, res) => {
         st.id,
         st.ticket_number,
         st.case_id,
+        st.category,
         st.issue_type,
         st.description,
         st.status,
@@ -429,7 +455,7 @@ router.get("/my-tickets", requireAuth, async (req, res) => {
 
       ORDER BY st.created_at DESC
       `,
-      [req.user.id]
+      [req.user.id],
     );
 
     // ==================================================
@@ -470,18 +496,18 @@ router.get("/my-tickets", requireAuth, async (req, res) => {
     // FINAL RESPONSE
     // ==================================================
 
-    const data = rows.map(ticket => ({
-
+    const data = rows.map((ticket) => ({
       ticket: {
         id: ticket.id,
         ticket_number: ticket.ticket_number,
         case_id: ticket.case_id,
+        category: ticket.category,
         issue_type: ticket.issue_type,
         description: ticket.description,
         status: ticket.status,
         created_by: ticket.created_by,
         created_at: ticket.created_at,
-        updated_at: ticket.updated_at
+        updated_at: ticket.updated_at,
       },
 
       dsa: {
@@ -490,13 +516,10 @@ router.get("/my-tickets", requireAuth, async (req, res) => {
         name: ticket.dsa_name,
         email: ticket.email,
         mobile: ticket.mobile,
-        company_name: ticket.company_name
+        company_name: ticket.company_name,
       },
 
-      attachments: attachments.filter(
-        file => file.ticket_id === ticket.id
-      )
-
+      attachments: attachments.filter((file) => file.ticket_id === ticket.id),
     }));
 
     return res.status(200).json({
@@ -520,25 +543,16 @@ router.get("/my-tickets", requireAuth, async (req, res) => {
 
 });
 
-// ======================================================
-// ADMIN / CORPORATE DSA ALL TICKETS WITH DOCUMENTS
-// GET /api/support-ticket/all
-// ======================================================
-
 router.get("/all", requireAuth, async (req, res) => {
   try {
-
     // ===========================================
     // ROLE CHECK
     // ===========================================
 
-    if (
-      req.user.role !== "admin" &&
-      req.user.role !== "Corporate DSA"
-    ) {
+    if (req.user.role !== "admin" && req.user.role !== "Corporate DSA") {
       return res.status(403).json({
         status: false,
-        message: "Access denied."
+        message: "Access denied.",
       });
     }
 
@@ -552,6 +566,7 @@ router.get("/all", requireAuth, async (req, res) => {
         st.id,
         st.ticket_number,
         st.case_id,
+        st.category,
         st.issue_type,
         st.description,
         st.status,
@@ -568,7 +583,12 @@ router.get("/all", requireAuth, async (req, res) => {
         d.email,
         d.mobile,
 
-        c.company_name
+        c.company_name,
+
+        lc.customer_name,
+        lc.bank_id,
+
+        b.bank_name
 
       FROM support_tickets st
 
@@ -578,6 +598,12 @@ router.get("/all", requireAuth, async (req, res) => {
       LEFT JOIN companies c
         ON d.company_id = c.id
 
+      LEFT JOIN loan_cases lc
+        ON st.case_id = lc.id
+
+      LEFT JOIN banks b
+        ON lc.bank_id = b.id
+
       ORDER BY st.created_at DESC
     `);
 
@@ -585,13 +611,13 @@ router.get("/all", requireAuth, async (req, res) => {
     // GET ALL ATTACHMENTS
     // ===========================================
 
-    const ticketIds = rows.map(ticket => ticket.id);
+    const ticketIds = rows.map((ticket) => ticket.id);
 
     let attachments = [];
 
     if (ticketIds.length > 0) {
-
-      const [files] = await db.promise().query(`
+      const [files] = await db.promise().query(
+        `
         SELECT
 
           id,
@@ -607,7 +633,9 @@ router.get("/all", requireAuth, async (req, res) => {
         WHERE ticket_id IN (?)
 
         ORDER BY id ASC
-      `, [ticketIds]);
+      `,
+        [ticketIds],
+      );
 
       attachments = files;
     }
@@ -616,12 +644,16 @@ router.get("/all", requireAuth, async (req, res) => {
     // FINAL RESPONSE
     // ===========================================
 
-    const data = rows.map(ticket => ({
-
+    const data = rows.map((ticket) => ({
       ticket: {
         id: ticket.id,
         ticket_number: ticket.ticket_number,
         case_id: ticket.case_id,
+        category: ticket.category,
+
+        customer_name: ticket.customer_name,
+        bank_name: ticket.bank_name,
+
         issue_type: ticket.issue_type,
         description: ticket.description,
         status: ticket.status,
@@ -630,7 +662,7 @@ router.get("/all", requireAuth, async (req, res) => {
         closed_reason: ticket.closed_reason,
         closed_at: ticket.closed_at,
         created_at: ticket.created_at,
-        updated_at: ticket.updated_at
+        updated_at: ticket.updated_at,
       },
 
       dsa: {
@@ -639,35 +671,28 @@ router.get("/all", requireAuth, async (req, res) => {
         name: ticket.dsa_name,
         email: ticket.email,
         mobile: ticket.mobile,
-        company_name: ticket.company_name
+        company_name: ticket.company_name,
       },
 
-      attachments: attachments.filter(
-        file => file.ticket_id === ticket.id
-      )
-
+      attachments: attachments.filter((file) => file.ticket_id === ticket.id),
     }));
 
     return res.status(200).json({
       status: true,
       message: "All support tickets fetched successfully.",
       count: data.length,
-      data
+      data,
     });
-
   } catch (error) {
-
     console.error("ALL TICKETS ERROR:", error);
 
     return res.status(500).json({
       status: false,
       message: "Failed to fetch support tickets.",
-      error: error.message
+      error: error.message,
     });
-
   }
 });
-
 // ======================================================
 // DSA GET OWN TICKET BY TICKET ID WITH DOCUMENTS
 // GET /api/support-ticket/my-ticket/:ticketId
@@ -711,6 +736,7 @@ router.get("/my-ticket/:ticketId", requireAuth, async (req, res) => {
         st.id,
         st.ticket_number,
         st.case_id,
+        st.category,
         st.issue_type,
         st.description,
         st.status,
@@ -742,7 +768,7 @@ router.get("/my-ticket/:ticketId", requireAuth, async (req, res) => {
 
       LIMIT 1
       `,
-      [ticketId, req.user.id]
+      [ticketId, req.user.id],
     );
 
     if (!ticket.length) {
@@ -785,6 +811,7 @@ router.get("/my-ticket/:ticketId", requireAuth, async (req, res) => {
           id: ticket[0].id,
           ticket_number: ticket[0].ticket_number,
           case_id: ticket[0].case_id,
+          category: ticket[0].category,
           issue_type: ticket[0].issue_type,
           description: ticket[0].description,
           status: ticket[0].status,
@@ -793,7 +820,7 @@ router.get("/my-ticket/:ticketId", requireAuth, async (req, res) => {
           closed_reason: ticket[0].closed_reason,
           closed_at: ticket[0].closed_at,
           created_at: ticket[0].created_at,
-          updated_at: ticket[0].updated_at
+          updated_at: ticket[0].updated_at,
         },
 
         dsa: {
@@ -802,11 +829,11 @@ router.get("/my-ticket/:ticketId", requireAuth, async (req, res) => {
           name: ticket[0].dsa_name,
           email: ticket[0].email,
           mobile: ticket[0].mobile,
-          company_name: ticket[0].company_name
+          company_name: ticket[0].company_name,
         },
 
-        attachments
-      }
+        attachments,
+      },
     });
 
   } catch (error) {
