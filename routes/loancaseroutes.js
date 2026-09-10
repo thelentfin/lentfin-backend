@@ -1425,6 +1425,29 @@ router.put(
           case_id,
         ],
       );
+      // ==========================================
+// AUTO CLOSE SUPPORT TICKET ON REJECTION
+// ==========================================
+
+if (status === "REJECTED") {
+  await db.promise().execute(
+    `
+    UPDATE support_tickets
+    SET
+      status = 'CLOSED',
+      closed_by = ?,
+      closed_reason = ?,
+      closed_at = NOW()
+    WHERE case_id = ?
+      AND status = 'OPEN'
+    `,
+    [
+      req.user.id,
+      reject_reason || "Loan case rejected by Corporate DSA/Admin",
+      case_id,
+    ],
+  );
+}
       // ==================================================
       // SOCKET.IO EVENT
       // ==================================================

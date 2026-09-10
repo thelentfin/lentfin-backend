@@ -54,11 +54,6 @@ const upload = multer({
 // POST /api/support-ticket/create
 // ======================================================
 
-// ======================================================
-// CREATE SUPPORT TICKET
-// POST /api/support-ticket/create
-// ======================================================
-
 router.post("/create", requireAuth, (req, res) => {
   upload.array("attachments", 5)(req, res, async (err) => {
     if (err instanceof multer.MulterError) {
@@ -382,6 +377,7 @@ router.post("/create", requireAuth, (req, res) => {
     }
   });
 });
+
 // ======================================================
 // DSA MY TICKETS
 // GET /api/support-ticket/my-tickets
@@ -486,6 +482,154 @@ router.get("/all", requireAuth, async (req, res) => {
 });
 
 // ======================================================
+// CLOSE SUPPORT TICKET
+// PUT /api/support-ticket/:ticketId/close
+// ======================================================
+
+router.put("/:ticketId/close", requireAuth, async (req, res) => {
+  const connection = await db.promise().getConnection();
+
+  try {
+    const { ticketId } = req.params;
+    const { closed_reason } = req.body;
+
+    // Only Corporate DSA / Admin
+    if (
+      req.user.role !== "admin" &&
+      req.user.role !== "Corporate DSA"
+    ) {
+      return res.status(403).json({
+        status: false,
+        message: "Only Corporate DSA or Admin can close support ticket.",
+      });
+    }
+
+    // Validate Ticket ID
+    if (!Number.isInteger(Number(ticketId)) || Number(ticketId) <= 0) {
+      return res.status(400).json({
+        status: false,
+        message: "Invalid ticket ID.",
+      });
+    }
+
+    // Validate Reason
+    if (!closed_reason || !closed_reason.trim()) {
+      return res.status(400).json({
+        status: false,
+        message: "closed_reason is required.",
+      });
+    }
+
+    await connection.beginTransaction();
+
+    // Find Ticket
+    const [tickets] = await connection.execute(
+      `
+      SELECT
+        id,
+        ticket_number,
+        case_id,
+        dsa_id,
+        status
+      FROM support_tickets
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [ticketId]
+    );
+
+    if (!tickets.length) {
+      await connection.rollback();
+
+      return res.status(404).json({
+        status: false,
+        message: "Support ticket not found.",
+      });
+    }
+
+    const ticket = tickets[0];
+
+    // Already Closed
+    if (ticket.status === "CLOSED") {
+      await connection.rollback();
+
+      return res.status(400).json({
+        status: false,
+        message: "Support ticket is already CLOSED.",
+        data: {
+          ticket_id: ticket.id,
+          ticket_number: ticket.ticket_number,
+          status: ticket.status,
+        },
+      });
+    }
+
+    // Close Ticket
+    await connection.execute(
+      `
+      UPDATE support_tickets
+      SET
+        status = 'CLOSED',
+        closed_by = ?,
+        closed_reason = ?,
+        closed_at = NOW()
+      WHERE id = ?
+      `,
+      [
+        req.user.id,
+        closed_reason.trim(),
+        ticketId,
+      ]
+    );
+
+    await connection.commit();
+
+    // Socket.IO
+    const io = req.app.get("io");
+
+    if (io) {
+      io.to("corporate").emit("dashboardUpdated", {
+        type: "ticketClosed",
+        ticketId: Number(ticketId),
+        caseId: ticket.case_id,
+      });
+
+      io.to(`dsa_${ticket.dsa_id}`).emit("dashboardUpdated", {
+        type: "ticketClosed",
+        ticketId: Number(ticketId),
+        caseId: ticket.case_id,
+      });
+    }
+
+    return res.status(200).json({
+      status: true,
+      message: "Support ticket closed successfully.",
+      data: {
+        ticket_id: ticket.id,
+        ticket_number: ticket.ticket_number,
+        case_id: ticket.case_id,
+        status: "CLOSED",
+        closed_by: req.user.id,
+        closed_reason: closed_reason.trim(),
+      },
+    });
+
+  } catch (error) {
+    await connection.rollback();
+
+    console.error("CLOSE SUPPORT TICKET ERROR:", error);
+
+    return res.status(500).json({
+      status: false,
+      message: "Failed to close support ticket.",
+      error: error.message,
+    });
+  } finally {
+    connection.release();
+  }
+});
+
+// ======================================================
 // TICKET DETAILS
 // GET /api/support-ticket/:ticketId
 // ======================================================
@@ -569,5 +713,9 @@ router.get("/:ticketId", requireAuth, async (req, res) => {
     });
   }
 });
+
+// ======================================================
+// EXPORT ROUTER
+// ======================================================
 
 module.exports = router;
