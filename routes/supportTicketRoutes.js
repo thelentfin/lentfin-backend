@@ -482,11 +482,11 @@ router.get("/all", requireAuth, async (req, res) => {
 });
 
 // ======================================================
-// CLOSE SUPPORT TICKET
-// PUT /api/support-ticket/:ticketId/close
+// RESOLVE SUPPORT TICKET
+// PUT /api/support-ticket/:ticketId/resolve
 // ======================================================
 
-router.put("/:ticketId/close", requireAuth, async (req, res) => {
+router.put("/:ticketId/resolve", requireAuth, async (req, res) => {
   const connection = await db.promise().getConnection();
 
   try {
@@ -500,7 +500,7 @@ router.put("/:ticketId/close", requireAuth, async (req, res) => {
     ) {
       return res.status(403).json({
         status: false,
-        message: "Only Corporate DSA or Admin can close support ticket.",
+        message: "Only Corporate DSA or Admin can resolve support ticket.",
       });
     }
 
@@ -549,13 +549,13 @@ router.put("/:ticketId/close", requireAuth, async (req, res) => {
 
     const ticket = tickets[0];
 
-    // Already Closed
-    if (ticket.status === "CLOSED") {
+    // Already Resolved
+    if (ticket.status === "RESOLVED") {
       await connection.rollback();
 
       return res.status(400).json({
         status: false,
-        message: "Support ticket is already CLOSED.",
+        message: "Support ticket is already RESOLVED.",
         data: {
           ticket_id: ticket.id,
           ticket_number: ticket.ticket_number,
@@ -564,12 +564,12 @@ router.put("/:ticketId/close", requireAuth, async (req, res) => {
       });
     }
 
-    // Close Ticket
+    // Resolve Ticket
     await connection.execute(
       `
       UPDATE support_tickets
       SET
-        status = 'CLOSED',
+        status = 'RESOLVED',
         closed_by = ?,
         closed_reason = ?,
         closed_at = NOW()
@@ -589,13 +589,13 @@ router.put("/:ticketId/close", requireAuth, async (req, res) => {
 
     if (io) {
       io.to("corporate").emit("dashboardUpdated", {
-        type: "ticketClosed",
+        type: "ticketResolved",
         ticketId: Number(ticketId),
         caseId: ticket.case_id,
       });
 
       io.to(`dsa_${ticket.dsa_id}`).emit("dashboardUpdated", {
-        type: "ticketClosed",
+        type: "ticketResolved",
         ticketId: Number(ticketId),
         caseId: ticket.case_id,
       });
@@ -603,119 +603,30 @@ router.put("/:ticketId/close", requireAuth, async (req, res) => {
 
     return res.status(200).json({
       status: true,
-      message: "Support ticket closed successfully.",
+      message: "Support ticket resolved successfully.",
       data: {
         ticket_id: ticket.id,
         ticket_number: ticket.ticket_number,
         case_id: ticket.case_id,
-        status: "CLOSED",
-        closed_by: req.user.id,
-        closed_reason: closed_reason.trim(),
+        status: "RESOLVED",
+        resolved_by: req.user.id,
+        resolved_reason: closed_reason.trim(),
       },
     });
 
   } catch (error) {
     await connection.rollback();
 
-    console.error("CLOSE SUPPORT TICKET ERROR:", error);
+    console.error("RESOLVE SUPPORT TICKET ERROR:", error);
 
     return res.status(500).json({
       status: false,
-      message: "Failed to close support ticket.",
+      message: "Failed to resolve support ticket.",
       error: error.message,
     });
   } finally {
     connection.release();
   }
 });
-
-// ======================================================
-// TICKET DETAILS
-// GET /api/support-ticket/:ticketId
-// ======================================================
-
-router.get("/:ticketId", requireAuth, async (req, res) => {
-  try {
-
-    const { ticketId } = req.params;
-
-    // Validate Ticket ID
-    if (!Number.isInteger(Number(ticketId)) || Number(ticketId) <= 0) {
-      return res.status(400).json({
-        status: false,
-        message: "Invalid ticket ID.",
-      });
-    }
-
-    const [ticket] = await db.promise().execute(
-      `
-      SELECT
-        st.*,
-        lc.case_number,
-        lc.customer_name
-      FROM support_tickets st
-      LEFT JOIN loan_cases lc
-        ON st.case_id = lc.id
-      WHERE st.id = ?
-      LIMIT 1
-      `,
-      [ticketId]
-    );
-
-    if (ticket.length === 0) {
-      return res.status(404).json({
-        status: false,
-        message: "Ticket not found.",
-      });
-    }
-
-    // DSA can view only own ticket
-    if (
-      req.user.role === "DSA" &&
-      ticket[0].dsa_id !== req.user.id
-    ) {
-      return res.status(403).json({
-        status: false,
-        message: "Access denied.",
-      });
-    }
-
-    const [attachments] = await db.promise().execute(
-      `
-      SELECT
-        id,
-        ticket_id,
-        file_name,
-        file_url,
-        file_type,
-        public_id
-      FROM support_ticket_attachments
-      WHERE ticket_id = ?
-      ORDER BY id ASC
-      `,
-      [ticketId]
-    );
-
-    return res.status(200).json({
-      status: true,
-      data: {
-        ...ticket[0],
-        attachments,
-      },
-    });
-
-  } catch (error) {
-    console.error("TICKET DETAILS ERROR:", error);
-
-    return res.status(500).json({
-      status: false,
-      message: error.message,
-    });
-  }
-});
-
-// ======================================================
-// EXPORT ROUTER
-// ======================================================
 
 module.exports = router;
