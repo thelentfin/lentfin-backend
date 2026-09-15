@@ -146,6 +146,13 @@ const dsaSignupSchema = z.object({
     .regex(/^[A-Z]{4}0[A-Z0-9]{6}$/, "Invalid IFSC code")
     .optional()
     .or(z.literal("")),
+
+  // ====================================================
+  // BANK & BRANCH NAME
+  // ====================================================
+
+  bank_name: z.string().trim().max(150).optional().or(z.literal("")),
+  branch_name: z.string().trim().max(150).optional().or(z.literal("")),
 });
 
 // ======================================================
