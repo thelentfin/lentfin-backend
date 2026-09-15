@@ -69,42 +69,7 @@ const upload = multer({
 // pan_file               = Partnership PAN Card
 // ======================================================
 
-const dsaUpload = upload.fields([
-  {
-    name: "card_file",
-    maxCount: 1,
-  },
-
-  {
-    name: "aadhaar_file",
-    maxCount: 1,
-  },
-
-  {
-    name: "passport_file",
-    maxCount: 1,
-  },
-
-  {
-    name: "msme_file",
-    maxCount: 1,
-  },
-
-  {
-    name: "gst_file",
-    maxCount: 1,
-  },
-
-  {
-    name: "partnership_deed_file",
-    maxCount: 1,
-  },
-
-  {
-    name: "pan_file",
-    maxCount: 1,
-  },
-]);
+const dsaUpload = upload.any();
 // ======================================================
 // DSA SIGNUP
 // ======================================================
@@ -263,7 +228,58 @@ router.post(
       // 1. ZOD VALIDATION
       // ==================================================
 
-      const validation = dsaSignupSchema.safeParse(req.body);
+      // ==================================================
+      // NORMALIZE PARTNERS FROM FORMDATA
+      // ==================================================
+
+      let partners = [];
+
+      try {
+        if (req.body.partners) {
+          if (typeof req.body.partners === "string") {
+            partners = JSON.parse(req.body.partners);
+          } else if (Array.isArray(req.body.partners)) {
+            partners = req.body.partners;
+          } else {
+            partners = Object.values(req.body.partners);
+          }
+        }
+
+        if (partners.length === 0) {
+          const partnerMap = {};
+
+          Object.keys(req.body).forEach((key) => {
+            const match = key.match(/^partners\[(\d+)\]\[(.+)\]$/);
+
+            if (!match) return;
+
+            const index = Number(match[1]);
+            const field = match[2];
+
+            if (!partnerMap[index]) partnerMap[index] = {};
+
+            partnerMap[index][field] = req.body[key];
+          });
+
+          partners = Object.values(partnerMap).sort(
+            (a, b) => Number(a.partner_number) - Number(b.partner_number),
+          );
+        }
+      } catch {
+        return res.status(400).json({
+          status: false,
+          message: "Invalid partners data",
+        });
+      }
+
+      // ==================================================
+      // ZOD VALIDATION
+      // ==================================================
+
+      const validation = dsaSignupSchema.safeParse({
+        ...req.body,
+        partners,
+      });
 
       if (!validation.success) {
         return res.status(400).json({
@@ -279,15 +295,28 @@ router.post(
       // 2. GET FILES
       // ==================================================
 
-      const files = req.files || {};
-
       // ==================================================
-      // HELPER
+      // 2. GET FILES (Dynamic Upload)
       // ==================================================
 
+      const uploadedFiles = {};
+
+      // upload.any() array ne object ma convert karse
+      (req.files || []).forEach((file) => {
+        uploadedFiles[file.fieldname] = file;
+      });
+
+      // Helper
       const hasFile = (fieldName) => {
-        return files[fieldName] && files[fieldName].length > 0;
+        return !!uploadedFiles[fieldName];
       };
+      // ==================================================
+      // 2.1 PARSE PARTNERS (ONLY FOR PARTNERSHIP)
+      // ==================================================
+
+   
+
+      
 
       // ==================================================
       // 3.1 BASIC DOCUMENTS
@@ -521,6 +550,41 @@ router.post(
       const requestResult = await query(insertRequestQuery, requestValues);
 
       const requestId = requestResult.insertId;
+      // ==================================================
+      // 8.1 SAVE PARTNERS (ONLY FOR PARTNERSHIP)
+      // ==================================================
+
+      const savedPartners = [];
+
+      if (data.constitution_type === "Partnership" && partners.length > 0) {
+        for (const partner of partners) {
+          const partnerResult = await query(
+            `INSERT INTO dsa_signup_partners (
+        request_id,
+        partner_number,
+        name,
+        email,
+        mobile,
+        pan_number,
+        aadhaar_number
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [
+              requestId,
+              partner.partner_number,
+              partner.name,
+              partner.email || null,
+              partner.mobile || null,
+              partner.pan_number || null,
+              partner.aadhaar_number || null,
+            ],
+          );
+
+          savedPartners.push({
+            ...partner,
+            partner_id: partnerResult.insertId,
+          });
+        }
+      }
 
       // ==================================================
       // 9. DOCUMENT TYPE MAP
@@ -541,11 +605,11 @@ router.post(
       // ==================================================
 
       for (const fieldName of Object.keys(documentMap)) {
-        if (!files[fieldName] || files[fieldName].length === 0) {
+        if (!uploadedFiles[fieldName]) {
           continue;
         }
 
-        const file = files[fieldName][0];
+        const file = uploadedFiles[fieldName];
 
         // ==============================================
         // UPLOAD TO CLOUDINARY
@@ -593,6 +657,66 @@ router.post(
           fileFormat,
           file.size,
         ]);
+      }
+      // ==================================================
+      // 10.1 UPLOAD PARTNER DOCUMENTS
+      // ==================================================
+
+      if (data.constitution_type === "Partnership") {
+        const partnerDocumentTypes = [
+          { suffix: "pan", type: "PAN" },
+          { suffix: "aadhaar", type: "AADHAAR" },
+          { suffix: "passport", type: "PASSPORT" },
+        ];
+
+        for (const partner of savedPartners) {
+          for (const doc of partnerDocumentTypes) {
+            const fieldName = `partner_${partner.partner_number}_${doc.suffix}`;
+
+            const file = uploadedFiles[fieldName];
+
+            if (!file) continue;
+
+            // Upload to Cloudinary
+            const cloudinaryResult = await uploadToCloudinary(
+              file,
+              `lentfin/dsa/signup/partners/${requestId}`,
+            );
+
+            const fileFormat =
+              cloudinaryResult.format ||
+              (file.originalname
+                ? file.originalname.split(".").pop().toLowerCase()
+                : null) ||
+              "pdf";
+
+            // Save in partner documents table
+            await query(
+              `INSERT INTO dsa_signup_partner_documents (
+          partner_id,
+          document_type,
+          original_name,
+          cloudinary_public_id,
+          cloudinary_url,
+          secure_url,
+          resource_type,
+          file_format,
+          file_size
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                partner.partner_id,
+                doc.type,
+                file.originalname,
+                cloudinaryResult.public_id,
+                cloudinaryResult.url,
+                cloudinaryResult.secure_url,
+                cloudinaryResult.resource_type,
+                fileFormat,
+                file.size,
+              ],
+            );
+          }
+        }
       }
       // ======================================================
       // 11. SEND CORPORATE DSA EMAIL NOTIFICATION
@@ -858,6 +982,7 @@ router.get(
           r.mobile,
           r.status,
           r.created_at,
+          r.constitution_type,
 
           r.company_name AS request_company_name,
           r.location AS request_location,
@@ -914,17 +1039,83 @@ router.get(
       `;
 
       const documents = await query(documentSql, [requestIds]);
+      // ==============================================
+      // 2.1 GET ALL PARTNERS FOR PENDING REQUESTS
+      // ==============================================
 
+      const partnerSql = `
+  SELECT
+    id,
+    request_id,
+    partner_number,
+    name,
+    email,
+    mobile,
+    pan_number,
+    aadhaar_number,
+    created_at
+  FROM dsa_signup_partners
+  WHERE request_id IN (?)
+  ORDER BY partner_number ASC
+`;
+
+      const partners = await query(partnerSql, [requestIds]);
+
+      // ==============================================
+      // 2.2 GET ALL PARTNER DOCUMENTS
+      // ==============================================
+
+      const partnerIds = partners.map((p) => p.id);
+
+      let partnerDocuments = [];
+
+      if (partnerIds.length > 0) {
+        const partnerDocumentSql = `
+    SELECT
+      id,
+      partner_id,
+      document_type,
+      original_name,
+      secure_url,
+      resource_type,
+      file_format,
+      file_size,
+      created_at
+    FROM dsa_signup_partner_documents
+    WHERE partner_id IN (?)
+    ORDER BY id ASC
+  `;
+
+        partnerDocuments = await query(partnerDocumentSql, [partnerIds]);
+      }
       // ==============================================
       // 3. MAP DOCUMENTS TO THEIR RESPECTIVE REQUEST
       // ==============================================
 
-      const result = requests.map((request) => ({
-        ...request,
-        documents: documents.filter(
-          (document) => document.request_id === request.id,
-        ),
-      }));
+      // ==============================================
+      // 3. MAP DOCUMENTS & PARTNERS TO REQUEST
+      // ==============================================
+
+      const result = requests.map((request) => {
+        const requestPartners = partners
+          .filter((partner) => partner.request_id === request.id)
+          .map((partner) => ({
+            ...partner,
+            documents: partnerDocuments.filter(
+              (doc) => doc.partner_id === partner.id,
+            ),
+          }));
+
+        return {
+          ...request,
+
+          documents: documents.filter(
+            (document) => document.request_id === request.id,
+          ),
+
+          partners: requestPartners,
+        };
+      });
 
       return res.json({
         status: true,
@@ -1008,13 +1199,47 @@ router.get(
       `;
 
       const documents = await query(documentSql, [id]);
+      // ======================================================
+      // GET PARTNERS
+      // ======================================================
 
+      const partners = await query(
+        `
+  SELECT *
+  FROM dsa_signup_partners
+  WHERE request_id = ?
+  ORDER BY partner_number ASC
+  `,
+        [id],
+      );
+
+      // ======================================================
+      // GET PARTNER DOCUMENTS
+      // ======================================================
+
+      for (const partner of partners) {
+        partner.documents = await query(
+          `
+    SELECT
+      id,
+      document_type,
+      original_name,
+      cloudinary_url,
+      secure_url,
+      file_format,
+      file_size
+    FROM dsa_signup_partner_documents
+    WHERE partner_id = ?
+    `,
+          [partner.id],
+        );
+      }
       return res.json({
         status: true,
-
         data: {
           request: requestResult[0],
           documents,
+          partners,
         },
       });
     } catch (error) {
@@ -1188,7 +1413,63 @@ router.put(
           document.resource_type,
         );
       }
+      // ======================================================
+      // DELETE PARTNER DOCUMENTS FROM CLOUDINARY
+      // ======================================================
 
+      // Get all signup partners
+      const signupPartners = await query(
+        `
+  SELECT id
+  FROM dsa_signup_partners
+  WHERE request_id = ?
+  `,
+        [id],
+      );
+
+      for (const partner of signupPartners) {
+        const partnerDocuments = await query(
+          `
+    SELECT cloudinary_public_id, resource_type
+    FROM dsa_signup_partner_documents
+    WHERE partner_id = ?
+    `,
+          [partner.id],
+        );
+
+        // Delete every partner document from Cloudinary
+        for (const doc of partnerDocuments) {
+          await deleteFromCloudinary(
+            doc.cloudinary_public_id,
+            doc.resource_type,
+          );
+        }
+      }
+      // ======================================================
+      // DELETE PARTNER TABLE RECORDS
+      // ======================================================
+
+      // First delete partner documents
+      await query(
+        `
+  DELETE FROM dsa_signup_partner_documents
+  WHERE partner_id IN (
+    SELECT id
+    FROM dsa_signup_partners
+    WHERE request_id = ?
+  )
+  `,
+        [id],
+      );
+
+      // Then delete partner details
+      await query(
+        `
+  DELETE FROM dsa_signup_partners
+  WHERE request_id = ?
+  `,
+        [id],
+      );
       // ==================================================
       // DELETE DOCUMENT RECORDS FROM DATABASE
       // ==================================================
@@ -1845,6 +2126,121 @@ router.put(
 
       const dsaId = dsaResult.insertId;
 
+      // ======================================================
+      // COPY SIGNUP PARTNERS TO FINAL PARTNER TABLE
+      // ======================================================
+
+      const signupPartners = await new Promise((resolve, reject) => {
+        connection.query(
+          `
+    SELECT *
+    FROM dsa_signup_partners
+    WHERE request_id = ?
+    ORDER BY partner_number ASC
+    `,
+          [id],
+          (err, result) => {
+            if (err) reject(err);
+            else resolve(result);
+          },
+        );
+      });
+
+      // Signup Partner ID → Verified Partner ID mapping
+      const partnerIdMap = {};
+
+      for (const partner of signupPartners) {
+        const partnerResult = await new Promise((resolve, reject) => {
+          connection.query(
+            `
+      INSERT INTO dsa_partner_details
+      (
+        dsa_id,
+        partner_number,
+        name,
+        email,
+        mobile,
+        pan_number,
+        aadhaar_number
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+            [
+              dsaId,
+              partner.partner_number,
+              partner.name,
+              partner.email,
+              partner.mobile,
+              partner.pan_number,
+              partner.aadhaar_number,
+            ],
+            (err, result) => {
+              if (err) reject(err);
+              else resolve(result);
+            },
+          );
+        });
+
+        // Save mapping
+        partnerIdMap[partner.id] = partnerResult.insertId;
+      }
+      // ======================================================
+      // COPY PARTNER DOCUMENTS TO FINAL TABLE
+      // ======================================================
+
+      for (const partner of signupPartners) {
+        const partnerDocuments = await new Promise((resolve, reject) => {
+          connection.query(
+            `
+      SELECT *
+      FROM dsa_signup_partner_documents
+      WHERE partner_id = ?
+      `,
+            [partner.id],
+            (err, result) => {
+              if (err) reject(err);
+              else resolve(result);
+            },
+          );
+        });
+
+        for (const doc of partnerDocuments) {
+          await new Promise((resolve, reject) => {
+            connection.query(
+              `
+        INSERT INTO dsa_partner_documents
+        (
+          partner_id,
+          document_type,
+          original_name,
+          cloudinary_public_id,
+          cloudinary_url,
+          secure_url,
+          resource_type,
+          file_format,
+          file_size
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+              [
+                partnerIdMap[partner.id],
+                doc.document_type,
+                doc.original_name,
+                doc.cloudinary_public_id,
+                doc.cloudinary_url,
+                doc.secure_url,
+                doc.resource_type,
+                doc.file_format,
+                doc.file_size,
+              ],
+              (err) => {
+                if (err) reject(err);
+                else resolve();
+              },
+            );
+          });
+        }
+      }
       // ==================================================
       // 11. GET SIGNUP DOCUMENTS
       // ==================================================
@@ -2443,7 +2839,6 @@ router.get(
 
       const dsaUsers = await query(dsaSql);
 
-
       // ==================================================
       // 2. IF NO DSA FOUND
       // ==================================================
@@ -2455,7 +2850,6 @@ router.get(
           data: [],
         });
       }
-
 
       // ==================================================
       // 3. GET ALL DOCUMENTS
@@ -2489,11 +2883,60 @@ router.get(
         ORDER BY id ASC
       `;
 
-      const documents = await query(
-        documentSql,
-        dsaIds
-      );
+      const documents = await query(documentSql, dsaIds);
+      // ==================================================
+      // 3.1 GET ALL VERIFIED PARTNERS
+      // ==================================================
 
+      const partnerSql = `
+  SELECT
+    id,
+    dsa_id,
+    partner_number,
+    name,
+    email,
+    mobile,
+    pan_number,
+    aadhaar_number,
+    created_at
+  FROM dsa_partner_details
+  WHERE dsa_id IN (${placeholders})
+  ORDER BY partner_number ASC
+`;
+
+      const partnerDetails = await query(partnerSql, dsaIds);
+
+      // ==================================================
+      // 3.2 GET ALL PARTNER DOCUMENTS
+      // ==================================================
+
+      const partnerIds = partnerDetails.map((p) => p.id);
+
+      let partnerDocuments = [];
+
+      if (partnerIds.length > 0) {
+        const partnerPlaceholders = partnerIds.map(() => "?").join(",");
+
+        const partnerDocumentSql = `
+    SELECT
+      id,
+      partner_id,
+      document_type,
+      original_name,
+      cloudinary_public_id,
+      cloudinary_url,
+      secure_url,
+      resource_type,
+      file_format,
+      file_size,
+      created_at
+    FROM dsa_partner_documents
+    WHERE partner_id IN (${partnerPlaceholders})
+    ORDER BY id ASC
+  `;
+
+        partnerDocuments = await query(partnerDocumentSql, partnerIds);
+      }
 
       // ==================================================
       // 4. MAP DOCUMENTS WITH DSA
@@ -2508,7 +2951,35 @@ router.get(
 
         documentsMap[document.dsa_id].push(document);
       }
+      // ==================================================
+      // 4.1 MAP PARTNER DOCUMENTS
+      // ==================================================
 
+      const partnerDocumentMap = {};
+
+      for (const document of partnerDocuments) {
+        if (!partnerDocumentMap[document.partner_id]) {
+          partnerDocumentMap[document.partner_id] = [];
+        }
+
+        partnerDocumentMap[document.partner_id].push(document);
+      }
+
+      // ==================================================
+      // 4.2 MAP PARTNERS WITH DSA
+      // ==================================================
+
+      const partnersMap = {};
+
+      for (const partner of partnerDetails) {
+        partner.documents = partnerDocumentMap[partner.id] || [];
+
+        if (!partnersMap[partner.dsa_id]) {
+          partnersMap[partner.dsa_id] = [];
+        }
+
+        partnersMap[partner.dsa_id].push(partner);
+      }
 
       // ==================================================
       // 5. ADD DOCUMENTS TO EACH DSA
@@ -2518,9 +2989,9 @@ router.get(
         ...dsa,
 
         documents: documentsMap[dsa.id] || [],
+
+        partners: partnersMap[dsa.id] || [],
       }));
-
-
       // ==================================================
       // 6. SUCCESS RESPONSE
       // ==================================================
@@ -2530,7 +3001,6 @@ router.get(
         count: finalData.length,
         data: finalData,
       });
-
     } catch (error) {
       console.error("GET ALL DSA USERS ERROR:", error);
 
