@@ -72,6 +72,99 @@ const upload = multer({
 const dsaUpload = upload.any();
 // ======================================================
 // DSA SIGNUP
+// ======================================================
+// IFSC LOOKUP PROXY (Public)
+// GET /api/dsa/ifsc/:code or GET /api/ifsc/:code
+// ======================================================
+
+router.get(["/dsa/ifsc/:code", "/ifsc/:code"], async (req, res) => {
+  try {
+    const rawCode = (req.params.code || "").trim().toUpperCase();
+    const ifscRegex = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+
+    if (!ifscRegex.test(rawCode)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid IFSC code format",
+      });
+    }
+
+    const response = await fetch(`https://ifsc.razorpay.com/${rawCode}`, {
+      signal: AbortSignal.timeout(6000),
+    });
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        return res.status(404).json({
+          success: false,
+          message: "IFSC code not found",
+        });
+      }
+      return res.status(response.status).json({
+        success: false,
+        message: "Failed to fetch IFSC details",
+      });
+    }
+
+    const data = await response.json();
+
+    // Intelligent branch name resolution & formatting
+    let rawBranch = (data.BRANCH || "").trim();
+    const rawCentre = (data.CENTRE || "").trim();
+    const rawDist = (data.DISTRICT || "").trim();
+    const rawCity = (data.CITY || "").trim();
+
+    // If branch is literally "BRANCH", "MAIN", "MAIN BRANCH" or empty, fallback to CENTRE or DISTRICT
+    if (!rawBranch || /^branch$/i.test(rawBranch) || /^main$/i.test(rawBranch) || /^main branch$/i.test(rawBranch)) {
+      rawBranch = rawCentre || rawDist || rawCity || "Main Branch";
+    }
+
+    // Fix merged words without spaces (e.g. ICICI "MUMBAINARIMAN POINT" -> "Mumbai - Nariman Point")
+    if (rawCentre && rawBranch.toUpperCase().startsWith(rawCentre.toUpperCase())) {
+      const charAfter = rawBranch[rawCentre.length];
+      if (charAfter && /[A-Za-z]/.test(charAfter)) {
+        rawBranch = rawCentre + " - " + rawBranch.slice(rawCentre.length).trim();
+      }
+    }
+
+    // Clean up commas and spaces
+    let resolvedBranch = rawBranch.replace(/\s*,\s*/g, ", ").replace(/\s+/g, " ").trim();
+
+    // Title Case formatting for elegant display
+    if (resolvedBranch === resolvedBranch.toUpperCase() && resolvedBranch.length > 2) {
+      resolvedBranch = resolvedBranch
+        .toLowerCase()
+        .split(" ")
+        .map((word) => {
+          if (!word) return "";
+          if (["and", "of", "the", "in", "at"].includes(word)) return word;
+          return word.charAt(0).toUpperCase() + word.slice(1);
+        })
+        .join(" ");
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        bank: data.BANK || "",
+        branch: resolvedBranch || data.BRANCH || "",
+        city: data.CITY || "",
+        state: data.STATE || "",
+        address: data.ADDRESS || "",
+        ifsc: data.IFSC || rawCode,
+      },
+    });
+  } catch (error) {
+    console.error("IFSC lookup error:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Internal error looking up IFSC code",
+    });
+  }
+});
+//1st api
+// ======================================================
+// 1. DSA SIGNUP REQUEST (PUBLIC)
 //
 // POST /api/dsa/signup
 //
@@ -135,7 +228,58 @@ router.post(
       // 1. ZOD VALIDATION
       // ==================================================
 
-      const validation = dsaSignupSchema.safeParse(req.body);
+      // ==================================================
+      // NORMALIZE PARTNERS FROM FORMDATA
+      // ==================================================
+
+      let partners = [];
+
+      try {
+        if (req.body.partners) {
+          if (typeof req.body.partners === "string") {
+            partners = JSON.parse(req.body.partners);
+          } else if (Array.isArray(req.body.partners)) {
+            partners = req.body.partners;
+          } else {
+            partners = Object.values(req.body.partners);
+          }
+        }
+
+        if (partners.length === 0) {
+          const partnerMap = {};
+
+          Object.keys(req.body).forEach((key) => {
+            const match = key.match(/^partners\[(\d+)\]\[(.+)\]$/);
+
+            if (!match) return;
+
+            const index = Number(match[1]);
+            const field = match[2];
+
+            if (!partnerMap[index]) partnerMap[index] = {};
+
+            partnerMap[index][field] = req.body[key];
+          });
+
+          partners = Object.values(partnerMap).sort(
+            (a, b) => Number(a.partner_number) - Number(b.partner_number),
+          );
+        }
+      } catch {
+        return res.status(400).json({
+          status: false,
+          message: "Invalid partners data",
+        });
+      }
+
+      // ==================================================
+      // ZOD VALIDATION
+      // ==================================================
+
+      const validation = dsaSignupSchema.safeParse({
+        ...req.body,
+        partners,
+      });
 
       if (!validation.success) {
         return res.status(400).json({
@@ -166,58 +310,6 @@ router.post(
       const hasFile = (fieldName) => {
         return !!uploadedFiles[fieldName];
       };
-      // ==================================================
-      // 2.1 PARSE PARTNERS (ONLY FOR PARTNERSHIP)
-      // ==================================================
-
-      // ======================================================
-      // NORMALIZE PARTNERS FROM FORMDATA
-      // Supports:
-      // partners[0][name]
-      // partners[1][name]
-      // OR partners JSON string
-      // ======================================================
-
-      let partners = [];
-
-      try {
-        if (req.body.partners) {
-          if (typeof req.body.partners === "string") {
-            partners = JSON.parse(req.body.partners);
-          } else if (Array.isArray(req.body.partners)) {
-            partners = req.body.partners;
-          } else {
-            partners = Object.values(req.body.partners);
-          }
-        }
-
-        // FormData keys => partners[0][name]
-        if (partners.length === 0) {
-          const partnerMap = {};
-
-          Object.keys(req.body).forEach((key) => {
-            const match = key.match(/^partners\[(\d+)\]\[(.+)\]$/);
-
-            if (!match) return;
-
-            const index = Number(match[1]);
-            const field = match[2];
-
-            if (!partnerMap[index]) partnerMap[index] = {};
-
-            partnerMap[index][field] = req.body[key];
-          });
-
-          partners = Object.values(partnerMap).sort(
-            (a, b) => Number(a.partner_number) - Number(b.partner_number),
-          );
-        }
-      } catch (err) {
-        return res.status(400).json({
-          status: false,
-          message: "Invalid partners data",
-        });
-      }
       // ==================================================
       // 3.1 BASIC DOCUMENTS
       // ALWAYS REQUIRED
@@ -414,10 +506,12 @@ router.post(
         account_holder_name,
         account_number,
         ifsc_code,
+        bank_name,
+        branch_name,
         status
       )
       VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING'
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING'
       )
     `;
 
@@ -441,6 +535,8 @@ router.post(
         data.account_holder_name || null,
         data.account_number || null,
         data.ifsc_code || null,
+        data.bank_name || null,
+        data.branch_name || null,
       ];
 
       const requestResult = await query(insertRequestQuery, requestValues);
@@ -481,6 +577,7 @@ router.post(
           });
         }
       }
+
       // ==================================================
       // 9. DOCUMENT TYPE MAP
       // ==================================================
@@ -1365,7 +1462,6 @@ router.put(
   `,
         [id],
       );
-
       // ==================================================
       // DELETE DOCUMENT RECORDS FROM DATABASE
       // ==================================================
@@ -1945,6 +2041,8 @@ router.put(
           account_holder_name,
           account_number,
           ifsc_code,
+          bank_name,
+          branch_name,
           role,
           status,
           must_change_password,
@@ -1952,6 +2050,8 @@ router.put(
           verified_at
         )
         VALUES (
+          ?,
+          ?,
           ?,
           ?,
           ?,
@@ -2000,6 +2100,8 @@ router.put(
         request.account_holder_name,
         request.account_number,
         request.ifsc_code,
+        request.bank_name || null,
+        request.branch_name || null,
 
         verified_by,
       ];
@@ -2701,6 +2803,8 @@ router.get(
           d.account_holder_name,
           d.account_number,
           d.ifsc_code,
+          d.bank_name,
+          d.branch_name,
 
           d.role,
           d.status,
@@ -2868,6 +2972,7 @@ router.get(
 
         partnersMap[partner.dsa_id].push(partner);
       }
+
       // ==================================================
       // 5. ADD DOCUMENTS TO EACH DSA
       // ==================================================
@@ -2879,7 +2984,6 @@ router.get(
 
         partners: partnersMap[dsa.id] || [],
       }));
-
       // ==================================================
       // 6. SUCCESS RESPONSE
       // ==================================================
