@@ -953,6 +953,7 @@ router.get(
           lc.sanction_amount,
           lc.status AS case_status,
           lc.dsa_id,
+          b.bank_name,
 
 
           /* ============================================
@@ -993,6 +994,12 @@ router.get(
         INNER JOIN loan_cases lc
           ON lcd.case_id = lc.id
 
+        /* ============================================
+           BANK NAME
+           ============================================ */  
+
+        INNER JOIN banks b
+          ON lc.bank_id = b.id
 
         /* ============================================
            DSA
@@ -1052,6 +1059,7 @@ router.get(
             customer_name: row.customer_name,
             sanction_amount: row.sanction_amount,
             status: row.case_status,
+            bank: row.bank_name || null,
           },
 
           // ============================================
