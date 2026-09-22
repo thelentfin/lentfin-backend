@@ -1395,12 +1395,12 @@ router.put(
         });
       }
 
-      // Only Submitted case can be reviewed
+      // Allow both SUBMITTED and ACCEPTED cases to be reviewed/rejected
 
-      if (caseResult[0].status !== "SUBMITTED") {
+      if (!["SUBMITTED", "ACCEPTED"].includes(caseResult[0].status)) {
         return res.status(400).json({
           status: false,
-          message: "Only submitted cases can be reviewed.",
+          message: "Only submitted or accepted cases can be reviewed.",
         });
       }
 
