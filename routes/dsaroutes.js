@@ -69,44 +69,117 @@ const upload = multer({
 // pan_file               = Partnership PAN Card
 // ======================================================
 
-const dsaUpload = upload.fields([
-  {
-    name: "card_file",
-    maxCount: 1,
-  },
-
-  {
-    name: "aadhaar_file",
-    maxCount: 1,
-  },
-
-  {
-    name: "passport_file",
-    maxCount: 1,
-  },
-
-  {
-    name: "msme_file",
-    maxCount: 1,
-  },
-
-  {
-    name: "gst_file",
-    maxCount: 1,
-  },
-
-  {
-    name: "partnership_deed_file",
-    maxCount: 1,
-  },
-
-  {
-    name: "pan_file",
-    maxCount: 1,
-  },
-]);
+const dsaUpload = upload.any();
 // ======================================================
 // DSA SIGNUP
+// ======================================================
+// IFSC LOOKUP PROXY (Public)
+// GET /api/dsa/ifsc/:code or GET /api/ifsc/:code
+// ======================================================
+
+router.get(["/dsa/ifsc/:code", "/ifsc/:code"], async (req, res) => {
+  try {
+    const rawCode = (req.params.code || "").trim().toUpperCase();
+    const ifscRegex = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+
+    if (!ifscRegex.test(rawCode)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid IFSC code format",
+      });
+    }
+
+    const response = await fetch(`https://ifsc.razorpay.com/${rawCode}`, {
+      signal: AbortSignal.timeout(6000),
+    });
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        return res.status(404).json({
+          success: false,
+          message: "IFSC code not found",
+        });
+      }
+      return res.status(response.status).json({
+        success: false,
+        message: "Failed to fetch IFSC details",
+      });
+    }
+
+    const data = await response.json();
+
+    // Intelligent branch name resolution & formatting
+    let rawBranch = (data.BRANCH || "").trim();
+    const rawCentre = (data.CENTRE || "").trim();
+    const rawDist = (data.DISTRICT || "").trim();
+    const rawCity = (data.CITY || "").trim();
+
+    // If branch is literally "BRANCH", "MAIN", "MAIN BRANCH" or empty, fallback to CENTRE or DISTRICT
+    if (
+      !rawBranch ||
+      /^branch$/i.test(rawBranch) ||
+      /^main$/i.test(rawBranch) ||
+      /^main branch$/i.test(rawBranch)
+    ) {
+      rawBranch = rawCentre || rawDist || rawCity || "Main Branch";
+    }
+
+    // Fix merged words without spaces (e.g. ICICI "MUMBAINARIMAN POINT" -> "Mumbai - Nariman Point")
+    if (
+      rawCentre &&
+      rawBranch.toUpperCase().startsWith(rawCentre.toUpperCase())
+    ) {
+      const charAfter = rawBranch[rawCentre.length];
+      if (charAfter && /[A-Za-z]/.test(charAfter)) {
+        rawBranch =
+          rawCentre + " - " + rawBranch.slice(rawCentre.length).trim();
+      }
+    }
+
+    // Clean up commas and spaces
+    let resolvedBranch = rawBranch
+      .replace(/\s*,\s*/g, ", ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    // Title Case formatting for elegant display
+    if (
+      resolvedBranch === resolvedBranch.toUpperCase() &&
+      resolvedBranch.length > 2
+    ) {
+      resolvedBranch = resolvedBranch
+        .toLowerCase()
+        .split(" ")
+        .map((word) => {
+          if (!word) return "";
+          if (["and", "of", "the", "in", "at"].includes(word)) return word;
+          return word.charAt(0).toUpperCase() + word.slice(1);
+        })
+        .join(" ");
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        bank: data.BANK || "",
+        branch: resolvedBranch || data.BRANCH || "",
+        city: data.CITY || "",
+        state: data.STATE || "",
+        address: data.ADDRESS || "",
+        ifsc: data.IFSC || rawCode,
+      },
+    });
+  } catch (error) {
+    console.error("IFSC lookup error:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Internal error looking up IFSC code",
+    });
+  }
+});
+//1st api
+// ======================================================
+// 1. DSA SIGNUP REQUEST (PUBLIC)
 //
 // POST /api/dsa/signup
 //
@@ -170,7 +243,102 @@ router.post(
       // 1. ZOD VALIDATION
       // ==================================================
 
-      const validation = dsaSignupSchema.safeParse(req.body);
+      // ==================================================
+      // NORMALIZE PARTNERS FROM FORMDATA
+      // ==================================================
+
+      let partners = [];
+
+      try {
+        if (req.body.partners) {
+          if (typeof req.body.partners === "string") {
+            partners = JSON.parse(req.body.partners);
+          } else if (Array.isArray(req.body.partners)) {
+            partners = req.body.partners;
+          } else {
+            partners = Object.values(req.body.partners);
+          }
+        }
+
+        if (partners.length === 0) {
+          const partnerMap = {};
+
+          Object.keys(req.body).forEach((key) => {
+            const match = key.match(/^partners\[(\d+)\]\[(.+)\]$/);
+
+            if (!match) return;
+
+            const index = Number(match[1]);
+            const field = match[2];
+
+            if (!partnerMap[index]) partnerMap[index] = {};
+
+            partnerMap[index][field] = req.body[key];
+          });
+
+          partners = Object.values(partnerMap).sort(
+            (a, b) => Number(a.partner_number) - Number(b.partner_number),
+          );
+        }
+      } catch {
+        return res.status(400).json({
+          status: false,
+          message: "Invalid partners data",
+        });
+      }
+      // ==================================================
+      // NORMALIZE DIRECTORS FROM FORMDATA
+      // ==================================================
+
+      let directors = [];
+
+      try {
+        if (req.body.directors) {
+          if (typeof req.body.directors === "string") {
+            directors = JSON.parse(req.body.directors);
+          } else if (Array.isArray(req.body.directors)) {
+            directors = req.body.directors;
+          } else {
+            directors = Object.values(req.body.directors);
+          }
+        }
+
+        if (directors.length === 0) {
+          const directorMap = {};
+
+          Object.keys(req.body).forEach((key) => {
+            const match = key.match(/^directors\[(\d+)\]\[(.+)\]$/);
+
+            if (!match) return;
+
+            const index = Number(match[1]);
+            const field = match[2];
+
+            if (!directorMap[index]) directorMap[index] = {};
+
+            directorMap[index][field] = req.body[key];
+          });
+
+          directors = Object.values(directorMap).sort(
+            (a, b) => Number(a.director_number) - Number(b.director_number),
+          );
+        }
+      } catch {
+        return res.status(400).json({
+          status: false,
+          message: "Invalid directors data",
+        });
+      }
+
+      // ==================================================
+      // ZOD VALIDATION
+      // ==================================================
+
+      const validation = dsaSignupSchema.safeParse({
+        ...req.body,
+        partners,
+        directors,
+      });
 
       if (!validation.success) {
         return res.status(400).json({
@@ -186,94 +354,102 @@ router.post(
       // 2. GET FILES
       // ==================================================
 
-      const files = req.files || {};
-
       // ==================================================
-      // HELPER
+      // 2. GET FILES (Dynamic Upload)
       // ==================================================
 
+      const uploadedFiles = {};
+
+      // upload.any() array ne object ma convert karse
+      (req.files || []).forEach((file) => {
+        uploadedFiles[file.fieldname] = file;
+      });
+
+      // Helper
       const hasFile = (fieldName) => {
-        return files[fieldName] && files[fieldName].length > 0;
+        return !!uploadedFiles[fieldName];
       };
-
       // ==================================================
-      // 3.1 BASIC DOCUMENTS
-      // ALWAYS REQUIRED
+      // 3. CONSTITUTION-WISE DOCUMENT VALIDATION
       // ==================================================
 
-      const basicRequiredDocuments = [
-        "card_file", // Basic PAN Card
-        "aadhaar_file", // Aadhaar
-        "passport_file", // Passport
-      ];
+      let requiredDocuments = [];
 
-      for (const documentName of basicRequiredDocuments) {
-        if (!hasFile(documentName)) {
+      switch (data.constitution_type) {
+        case "Individual":
+          requiredDocuments = [
+            "photo_file",
+            "pan_file",
+            "aadhaar_file",
+            "bank_file",
+          ];
+          break;
+
+        case "Proprietorship":
+          requiredDocuments = [
+            "photo_file",
+            "pan_file",
+            "aadhaar_file",
+            "bank_file",
+          ];
+          break;
+
+        case "Partnership/LLP":
+          requiredDocuments = [
+            "bank_file",
+            "firm_pan_file",
+            "partnership_deed_file",
+          ];
+          break;
+
+        case "Private Limited":
+          requiredDocuments = [
+            "photo_file",
+            "pan_file",
+            "aadhaar_file",
+            "bank_file",
+            "firm_pan_file",
+            "udyam_file",
+            "gst_file",
+          ];
+
+          break;
+
+        default:
           return res.status(400).json({
             status: false,
-            message: `${documentName} is required`,
+            message: "Invalid constitution type",
           });
+      }
+
+      const missingDocuments = requiredDocuments.filter(
+        (field) => !hasFile(field),
+      );
+
+      // ======================================================
+      // PRIVATE LIMITED
+      // INCORPORATION OR MOA OR AOA
+      // ======================================================
+
+      if (data.constitution_type === "Private Limited") {
+        const hasCompanyDocument =
+          hasFile("incorporation_certificate_file") ||
+          hasFile("moa_file") ||
+          hasFile("aoa_file");
+
+        if (!hasCompanyDocument) {
+          missingDocuments.push(
+            "incorporation_certificate_file OR moa_file OR aoa_file",
+          );
         }
       }
 
-      // ==================================================
-      // 3.2 GST + MSME
-      // REQUIRED ONLY WHEN GST NUMBER IS ENTERED
-      // ==================================================
-
-      if (data.gst_number && data.gst_number.trim() !== "") {
-        // -----------------------------------------------
-        // GST CERTIFICATE
-        // -----------------------------------------------
-
-        if (!hasFile("gst_file")) {
-          return res.status(400).json({
-            status: false,
-            message: "GST certificate is required when GST number is provided",
-          });
-        }
-
-        // -----------------------------------------------
-        // MSME CERTIFICATE
-        // -----------------------------------------------
-
-        if (!hasFile("msme_file")) {
-          return res.status(400).json({
-            status: false,
-            message: "MSME certificate is required when GST number is provided",
-          });
-        }
-      }
-
-      // ==================================================
-      // 3.3 PARTNERSHIP DOCUMENTS
-      // REQUIRED ONLY FOR PARTNERSHIP
-      // ==================================================
-
-      if (data.constitution_type === "Partnership") {
-        // -----------------------------------------------
-        // PARTNERSHIP DEED
-        // -----------------------------------------------
-
-        if (!hasFile("partnership_deed_file")) {
-          return res.status(400).json({
-            status: false,
-            message:
-              "Partnership deed is required for Partnership constitution",
-          });
-        }
-
-        // -----------------------------------------------
-        // PARTNERSHIP PAN CARD
-        // -----------------------------------------------
-
-        if (!hasFile("pan_file")) {
-          return res.status(400).json({
-            status: false,
-            message:
-              "Partnership PAN card is required for Partnership constitution",
-          });
-        }
+      if (missingDocuments.length > 0) {
+        return res.status(400).json({
+          status: false,
+          message: "Required documents are missing",
+          missing: missingDocuments,
+        });
       }
       // ==================================================
       // 4. CHECK COMPANY
@@ -392,10 +568,12 @@ router.post(
         account_holder_name,
         account_number,
         ifsc_code,
+        bank_name,
+        branch_name,
         status
       )
       VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING'
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING'
       )
     `;
 
@@ -419,60 +597,110 @@ router.post(
         data.account_holder_name || null,
         data.account_number || null,
         data.ifsc_code || null,
+        data.bank_name || null,
+        data.branch_name || null,
       ];
 
       const requestResult = await query(insertRequestQuery, requestValues);
 
       const requestId = requestResult.insertId;
-
       // ==================================================
-      // 9. DOCUMENT TYPE MAP
-      // ==================================================
-
-      const documentMap = {
-        card_file: "CARD",
-        aadhaar_file: "AADHAAR",
-        passport_file: "PASSPORT",
-        msme_file: "MSME",
-        gst_file: "GST",
-        partnership_deed_file: "PARTNERSHIP_DEED",
-        pan_file: "PAN",
-      };
-
-      // ==================================================
-      // 10. UPLOAD DOCUMENTS TO CLOUDINARY
+      // SAVE DIRECTORS (ONLY FOR PRIVATE LIMITED)
       // ==================================================
 
-      for (const fieldName of Object.keys(documentMap)) {
-        if (!files[fieldName] || files[fieldName].length === 0) {
-          continue;
+      const savedDirectors = [];
+
+      if (
+        data.constitution_type === "Private Limited" &&
+        directors.length > 0
+      ) {
+        for (const director of directors) {
+          const directorResult = await query(
+            `INSERT INTO dsa_signup_directors (
+        request_id,
+        director_number,
+        name,
+        email,
+        mobile,
+        pan_number,
+        aadhaar_number
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [
+              requestId,
+              director.director_number,
+              director.name,
+              director.email || null,
+              director.mobile || null,
+              director.pan_number || null,
+              director.aadhaar_number || null,
+            ],
+          );
+
+          savedDirectors.push({
+            ...director,
+            director_id: directorResult.insertId,
+          });
         }
+      }
+      // ==================================================
+      // 8.1 SAVE PARTNERS (ONLY FOR PARTNERSHIP)
+      // ==================================================
 
-        const file = files[fieldName][0];
+      const savedPartners = [];
 
-        // ==============================================
-        // UPLOAD TO CLOUDINARY
-        // ==============================================
+      if (data.constitution_type === "Partnership/LLP" && partners.length > 0) {
+        for (const partner of partners) {
+          const partnerResult = await query(
+            `INSERT INTO dsa_signup_partners (
+        request_id,
+        partner_number,
+        name,
+        email,
+        mobile,
+        pan_number,
+        aadhaar_number
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [
+              requestId,
+              partner.partner_number,
+              partner.name,
+              partner.email || null,
+              partner.mobile || null,
+              partner.pan_number || null,
+              partner.aadhaar_number || null,
+            ],
+          );
 
-        const cloudinaryResult = await uploadToCloudinary(
-          file,
-          `lentfin/dsa/signup/${requestId}`,
-        );
+          savedPartners.push({
+            ...partner,
+            partner_id: partnerResult.insertId,
+          });
+          // ==================================================
+          // SAVE PARTNER DOCUMENTS
+          // ==================================================
 
-        // Determine file format
-        const fileFormat =
-          cloudinaryResult.format ||
-          (file.originalname
-            ? file.originalname.split(".").pop().toLowerCase()
-            : null) ||
-          "pdf";
-        // ==============================================
-        // SAVE DOCUMENT DETAILS
-        // ==============================================
+          if (data.constitution_type === "Partnership/LLP") {
+            const partnerDocumentMap = {
+              photo: "PHOTO",
+              pan: "PAN",
+              aadhaar: "AADHAAR",
+            };
 
-        const documentQuery = `
-        INSERT INTO dsa_signup_documents (
-          request_id,
+            for (const partner of savedPartners) {
+              for (const [field, type] of Object.entries(partnerDocumentMap)) {
+                const fieldName = `partner_${partner.partner_number}_${field}`;
+
+                if (!uploadedFiles[fieldName]) continue;
+
+                const uploaded = await uploadToCloudinary(
+                  uploadedFiles[fieldName].buffer,
+                  uploadedFiles[fieldName].originalname,
+                  `lentfin/dsa/signup/partners/${requestId}`,
+                );
+
+                await query(
+                  `INSERT INTO dsa_signup_partner_documents (
+          partner_id,
           document_type,
           original_name,
           cloudinary_public_id,
@@ -481,21 +709,153 @@ router.post(
           resource_type,
           file_format,
           file_size
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `;
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                  [
+                    partner.partner_id,
+                    type,
+                    uploadedFiles[fieldName].originalname,
+                    uploaded.public_id,
+                    uploaded.url,
+                    uploaded.secure_url,
+                    uploaded.resource_type,
+                    uploaded.format,
+                    uploadedFiles[fieldName].size,
+                  ],
+                );
+              }
+            }
+          }
+        }
+      }
 
-        await query(documentQuery, [
-          requestId,
-          documentMap[fieldName],
-          file.originalname,
-          cloudinaryResult.public_id,
-          cloudinaryResult.url,
-          cloudinaryResult.secure_url,
-          cloudinaryResult.resource_type,
-          fileFormat,
-          file.size,
-        ]);
+      // ==================================================
+      // 9. DOCUMENT TYPE MAP
+      // ==================================================
+
+      const documentMap = {
+        photo_file: "PHOTO",
+
+        pan_file: "PAN",
+
+        aadhaar_file: "AADHAAR",
+
+        bank_file: "BANK_DOCUMENT",
+
+        firm_pan_file: "FIRM_PAN",
+
+        partnership_deed_file: "PARTNERSHIP_DEED",
+
+        gst_file: "GST",
+
+        udyam_file: "UDYAM",
+
+        incorporation_certificate_file: "INCORPORATION_CERTIFICATE",
+
+        moa_file: "MOA",
+
+        aoa_file: "AOA",
+      };
+
+      // ==================================================
+      // 10. UPLOAD DOCUMENTS TO CLOUDINARY
+      // ==================================================
+      // ==================================================
+      // 10. UPLOAD DOCUMENTS TO CLOUDINARY
+      // ==================================================
+
+      for (const [fieldName, documentType] of Object.entries(documentMap)) {
+        if (!uploadedFiles[fieldName]) continue;
+
+        const uploaded = await uploadToCloudinary(
+          uploadedFiles[fieldName].buffer,
+          uploadedFiles[fieldName].originalname,
+          `lentfin/dsa/signup/${requestId}`,
+        );
+
+        await query(
+          `INSERT INTO dsa_signup_documents (
+      request_id,
+      document_type,
+      original_name,
+      cloudinary_public_id,
+      cloudinary_url,
+      secure_url,
+      resource_type,
+      file_format,
+      file_size
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            requestId,
+            documentType,
+            uploadedFiles[fieldName].originalname,
+            uploaded.public_id,
+            uploaded.url,
+            uploaded.secure_url,
+            uploaded.resource_type,
+            uploaded.format,
+            uploadedFiles[fieldName].size,
+          ],
+        );
+      }
+      // ==================================================
+      // 10.1 UPLOAD PARTNER DOCUMENTS
+      // ==================================================
+
+      if (data.constitution_type === "Partnership") {
+        const partnerDocumentTypes = [
+          { suffix: "pan", type: "PAN" },
+          { suffix: "aadhaar", type: "AADHAAR" },
+          { suffix: "passport", type: "PASSPORT" },
+        ];
+
+        for (const partner of savedPartners) {
+          for (const doc of partnerDocumentTypes) {
+            const fieldName = `partner_${partner.partner_number}_${doc.suffix}`;
+
+            const file = uploadedFiles[fieldName];
+
+            if (!file) continue;
+
+            // Upload to Cloudinary
+            const cloudinaryResult = await uploadToCloudinary(
+              file,
+              `lentfin/dsa/signup/partners/${requestId}`,
+            );
+
+            const fileFormat =
+              cloudinaryResult.format ||
+              (file.originalname
+                ? file.originalname.split(".").pop().toLowerCase()
+                : null) ||
+              "pdf";
+
+            // Save in partner documents table
+            await query(
+              `INSERT INTO dsa_signup_partner_documents (
+          partner_id,
+          document_type,
+          original_name,
+          cloudinary_public_id,
+          cloudinary_url,
+          secure_url,
+          resource_type,
+          file_format,
+          file_size
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                partner.partner_id,
+                doc.type,
+                file.originalname,
+                cloudinaryResult.public_id,
+                cloudinaryResult.url,
+                cloudinaryResult.secure_url,
+                cloudinaryResult.resource_type,
+                fileFormat,
+                file.size,
+              ],
+            );
+          }
+        }
       }
       // ======================================================
       // 11. SEND CORPORATE DSA EMAIL NOTIFICATION
@@ -761,6 +1121,7 @@ router.get(
           r.mobile,
           r.status,
           r.created_at,
+          r.constitution_type,
 
           r.company_name AS request_company_name,
           r.location AS request_location,
@@ -803,6 +1164,7 @@ router.get(
           request_id,
           document_type,
           original_name,
+           cloudinary_url,
           secure_url,
           resource_type,
           file_format,
@@ -817,17 +1179,121 @@ router.get(
       `;
 
       const documents = await query(documentSql, [requestIds]);
+      // ==============================================
+      // 2.1 GET ALL PARTNERS FOR PENDING REQUESTS
+      // ==============================================
+
+      const partnerSql = `
+  SELECT
+    id,
+    request_id,
+    partner_number,
+    name,
+    email,
+    mobile,
+    pan_number,
+    aadhaar_number,
+    created_at
+  FROM dsa_signup_partners
+  WHERE request_id IN (?)
+  ORDER BY partner_number ASC
+`;
+
+      let partners = [];
+
+      const partnershipRequestIds = requests
+        .filter((r) => r.constitution_type === "Partnership/LLP")
+        .map((r) => r.id);
+
+      if (partnershipRequestIds.length > 0) {
+        partners = await query(partnerSql, [partnershipRequestIds]);
+      }
 
       // ==============================================
-      // 3. MAP DOCUMENTS TO THEIR RESPECTIVE REQUEST
+      // 2.2 GET ALL PARTNER DOCUMENTS
       // ==============================================
 
-      const result = requests.map((request) => ({
-        ...request,
-        documents: documents.filter(
-          (document) => document.request_id === request.id,
-        ),
-      }));
+      const partnerIds = partners.map((p) => p.id);
+
+      let partnerDocuments = [];
+
+      if (partnerIds.length > 0) {
+        const partnerDocumentSql = `
+    SELECT
+      id,
+      partner_id,
+      document_type,
+      original_name,
+      secure_url,
+       cloudinary_url,
+      resource_type,
+      file_format,
+      file_size,
+      created_at
+    FROM dsa_signup_partner_documents
+    WHERE partner_id IN (?)
+    ORDER BY id ASC
+  `;
+
+        partnerDocuments = await query(partnerDocumentSql, [partnerIds]);
+      }
+      // ==============================================
+      // 2.3 GET ALL DIRECTORS FOR PRIVATE LIMITED
+      // ==============================================
+
+      const privateRequestIds = requests
+        .filter((r) => r.constitution_type === "Private Limited")
+        .map((r) => r.id);
+
+      let directors = [];
+
+      if (privateRequestIds.length > 0) {
+        const directorSql = `
+    SELECT
+      id,
+      request_id,
+      director_number,
+      name,
+      email,
+      mobile,
+      pan_number,
+      aadhaar_number,
+      created_at
+    FROM dsa_signup_directors
+    WHERE request_id IN (?)
+    ORDER BY director_number ASC
+  `;
+
+        directors = await query(directorSql, [privateRequestIds]);
+      }
+
+      // ==============================================
+      // 3. MAP DOCUMENTS & PARTNERS TO REQUEST
+      // ==============================================
+
+      const result = requests.map((request) => {
+        const requestPartners = partners
+          .filter((partner) => partner.request_id === request.id)
+          .map((partner) => ({
+            ...partner,
+            documents: partnerDocuments.filter(
+              (doc) => doc.partner_id === partner.id,
+            ),
+          }));
+
+        return {
+          ...request,
+
+          documents: documents.filter(
+            (document) => document.request_id === request.id,
+          ),
+
+          partners: requestPartners,
+          directors: directors.filter(
+            (director) => director.request_id === request.id,
+          ),
+        };
+      });
 
       return res.json({
         status: true,
@@ -897,6 +1363,7 @@ router.get(
           request_id,
           document_type,
           original_name,
+          cloudinary_url,
           secure_url,
           resource_type,
           file_format,
@@ -911,15 +1378,75 @@ router.get(
       `;
 
       const documents = await query(documentSql, [id]);
+      // ======================================================
+      // GET PARTNERS
+      // ======================================================
 
-      return res.json({
-        status: true,
+      let partners = [];
 
-        data: {
-          request: requestResult[0],
-          documents,
-        },
-      });
+      if (requestResult[0].constitution_type === "Partnership/LLP") {
+        partners = await query(
+          `
+SELECT *
+FROM dsa_signup_partners
+WHERE request_id = ?
+ORDER BY partner_number ASC
+`,
+          [id],
+        );
+
+        for (const partner of partners) {
+          partner.documents = await query(
+            `
+SELECT
+  id,
+  document_type,
+  original_name,
+  cloudinary_url,
+  secure_url,
+  file_format,
+  file_size
+FROM dsa_signup_partner_documents
+WHERE partner_id = ?
+`,
+            [partner.id],
+          );
+        }
+      }
+      // ======================================================
+      // GET DIRECTORS (ONLY FOR PRIVATE LIMITED)
+      // ======================================================
+
+      let directors = [];
+
+      if (requestResult[0].constitution_type === "Private Limited") {
+        const directorSql = `
+    SELECT
+      id,
+      request_id,
+      director_number,
+      name,
+      email,
+      mobile,
+      pan_number,
+      aadhaar_number,
+      created_at
+    FROM dsa_signup_directors
+    WHERE request_id = ?
+    ORDER BY director_number ASC
+  `;
+
+        directors = await query(directorSql, [id]);
+      }
+    return res.json({
+      status: true,
+      data: {
+        request: requestResult[0],
+        documents,
+        partners,
+        directors,
+      },
+    });
     } catch (error) {
       return res.status(500).json({
         status: false,
@@ -927,8 +1454,8 @@ router.get(
       });
     }
   },
+  
 );
-
 
 // ======================================================
 // REJECT DSA REQUEST
@@ -989,7 +1516,8 @@ router.put(
           name,
           email,
           mobile,
-          status
+          status,
+          constitution_type
         FROM dsa_signup_requests
         WHERE id = ?
       `;
@@ -1088,10 +1616,80 @@ router.put(
 
         await deleteFromCloudinary(
           document.cloudinary_public_id,
-          document.resource_type,
+          document.resource_type || "image",
         );
       }
+      // ======================================================
+      // DELETE PARTNER DOCUMENTS FROM CLOUDINARY
+      // ======================================================
+      if (request.constitution_type === "Partnership/LLP") {
+        // Get all signup partners
+        const signupPartners = await query(
+          `
+  SELECT id
+  FROM dsa_signup_partners
+  WHERE request_id = ?
+  `,
+          [id],
+        );
 
+        for (const partner of signupPartners) {
+          const partnerDocuments = await query(
+            `
+    SELECT cloudinary_public_id, resource_type
+    FROM dsa_signup_partner_documents
+    WHERE partner_id = ?
+    `,
+            [partner.id],
+          );
+
+          // Delete every partner document from Cloudinary
+          for (const doc of partnerDocuments) {
+            await deleteFromCloudinary(
+              doc.cloudinary_public_id,
+              doc.resource_type,
+            );
+          }
+        }
+        // ======================================================
+        // DELETE PARTNER TABLE RECORDS
+        // ======================================================
+
+        // First delete partner documents
+        await query(
+          `
+  DELETE FROM dsa_signup_partner_documents
+  WHERE partner_id IN (
+    SELECT id
+    FROM dsa_signup_partners
+    WHERE request_id = ?
+  )
+  `,
+          [id],
+        );
+
+        // Then delete partner details
+        await query(
+          `
+  DELETE FROM dsa_signup_partners
+  WHERE request_id = ?
+  `,
+          [id],
+        );
+      }
+      // ======================================================
+      // DELETE PRIVATE LIMITED DIRECTORS
+      // ======================================================
+
+      if (request.constitution_type === "Private Limited") {
+        await query(
+          `
+    DELETE FROM dsa_signup_directors
+    WHERE request_id = ?
+    `,
+          [id],
+        );
+      }
       // ==================================================
       // DELETE DOCUMENT RECORDS FROM DATABASE
       // ==================================================
@@ -1671,6 +2269,8 @@ router.put(
           account_holder_name,
           account_number,
           ifsc_code,
+          bank_name,
+          branch_name,
           role,
           status,
           must_change_password,
@@ -1678,6 +2278,8 @@ router.put(
           verified_at
         )
         VALUES (
+          ?,
+          ?,
           ?,
           ?,
           ?,
@@ -1726,6 +2328,8 @@ router.put(
         request.account_holder_name,
         request.account_number,
         request.ifsc_code,
+        request.bank_name || null,
+        request.branch_name || null,
 
         verified_by,
       ];
@@ -1741,7 +2345,182 @@ router.put(
       });
 
       const dsaId = dsaResult.insertId;
+      // ======================================================
+      // COPY PRIVATE LIMITED DIRECTORS
+      // ======================================================
 
+      if (request.constitution_type === "Private Limited") {
+       const signupDirectors = await new Promise((resolve, reject) => {
+         connection.query(
+           `
+      SELECT
+        director_number,
+        name,
+        email,
+        mobile,
+        pan_number,
+        aadhaar_number
+      FROM dsa_signup_directors
+      WHERE request_id = ?
+      ORDER BY director_number ASC
+    `,
+           [id],
+           (err, result) => {
+             if (err) reject(err);
+             else resolve(result);
+           },
+         );
+       });
+
+        for (const director of signupDirectors) {
+        await new Promise((resolve, reject) => {
+          connection.query(
+            `
+      INSERT INTO dsa_directors
+      (
+        dsa_id,
+        director_number,
+        name,
+        email,
+        mobile,
+        pan_number,
+        aadhaar_number
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `,
+            [
+              dsaId,
+              director.director_number,
+              director.name,
+              director.email,
+              director.mobile,
+              director.pan_number,
+              director.aadhaar_number,
+            ],
+            (err) => {
+              if (err) reject(err);
+              else resolve();
+            },
+          );
+        });
+        }
+      }
+      // ======================================================
+      // COPY SIGNUP PARTNERS TO FINAL PARTNER TABLE
+      // ======================================================
+      if (request.constitution_type === "Partnership/LLP") {
+        const signupPartners = await new Promise((resolve, reject) => {
+          connection.query(
+            `
+    SELECT *
+    FROM dsa_signup_partners
+    WHERE request_id = ?
+    ORDER BY partner_number ASC
+    `,
+            [id],
+            (err, result) => {
+              if (err) reject(err);
+              else resolve(result);
+            },
+          );
+        });
+
+        // Signup Partner ID → Verified Partner ID mapping
+        const partnerIdMap = {};
+
+        for (const partner of signupPartners) {
+          const partnerResult = await new Promise((resolve, reject) => {
+            connection.query(
+              `
+      INSERT INTO dsa_partner_details
+      (
+        dsa_id,
+        partner_number,
+        name,
+        email,
+        mobile,
+        pan_number,
+        aadhaar_number
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+              [
+                dsaId,
+                partner.partner_number,
+                partner.name,
+                partner.email,
+                partner.mobile,
+                partner.pan_number,
+                partner.aadhaar_number,
+              ],
+              (err, result) => {
+                if (err) reject(err);
+                else resolve(result);
+              },
+            );
+          });
+
+          // Save mapping
+          partnerIdMap[partner.id] = partnerResult.insertId;
+        }
+        // ======================================================
+        // COPY PARTNER DOCUMENTS TO FINAL TABLE
+        // ======================================================
+
+        for (const partner of signupPartners) {
+          const partnerDocuments = await new Promise((resolve, reject) => {
+            connection.query(
+              `
+      SELECT *
+      FROM dsa_signup_partner_documents
+      WHERE partner_id = ?
+      `,
+              [partner.id],
+              (err, result) => {
+                if (err) reject(err);
+                else resolve(result);
+              },
+            );
+          });
+
+          for (const doc of partnerDocuments) {
+            await new Promise((resolve, reject) => {
+              connection.query(
+                `
+        INSERT INTO dsa_partner_documents
+        (
+          partner_id,
+          document_type,
+          original_name,
+          cloudinary_public_id,
+          cloudinary_url,
+          secure_url,
+          resource_type,
+          file_format,
+          file_size
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+                [
+                  partnerIdMap[partner.id],
+                  doc.document_type,
+                  doc.original_name,
+                  doc.cloudinary_public_id,
+                  doc.cloudinary_url,
+                  doc.secure_url,
+                  doc.resource_type,
+                  doc.file_format,
+                  doc.file_size,
+                ],
+                (err) => {
+                  if (err) reject(err);
+                  else resolve();
+                },
+              );
+            });
+          }
+        }
+      }
       // ==================================================
       // 11. GET SIGNUP DOCUMENTS
       // ==================================================
@@ -2261,8 +3040,6 @@ router.put(
   },
 );
 
-
-
 // ======================================================
 // GET ALL DSA USERS WITH DOCUMENTS
 //
@@ -2278,16 +3055,13 @@ router.put(
 // Password is NEVER returned.
 // ======================================================
 
-router.get(
-  "/users",
-  authenticateAndAuthorize(),
-  async (req, res) => {
-    try {
-      // ==================================================
-      // 1. GET ALL DSA USERS
-      // ==================================================
+router.get("/users", authenticateAndAuthorize(), async (req, res) => {
+  try {
+    // ==================================================
+    // 1. GET ALL DSA USERS
+    // ==================================================
 
-      const dsaSql = `
+    const dsaSql = `
         SELECT
           d.id,
           d.source_request_id,
@@ -2312,6 +3086,8 @@ router.get(
           d.account_holder_name,
           d.account_number,
           d.ifsc_code,
+          d.bank_name,
+          d.branch_name,
 
           d.role,
           d.status,
@@ -2336,31 +3112,29 @@ router.get(
         ORDER BY d.id DESC
       `;
 
-      const dsaUsers = await query(dsaSql);
+    const dsaUsers = await query(dsaSql);
 
+    // ==================================================
+    // 2. IF NO DSA FOUND
+    // ==================================================
 
-      // ==================================================
-      // 2. IF NO DSA FOUND
-      // ==================================================
+    if (dsaUsers.length === 0) {
+      return res.status(200).json({
+        status: true,
+        count: 0,
+        data: [],
+      });
+    }
 
-      if (dsaUsers.length === 0) {
-        return res.status(200).json({
-          status: true,
-          count: 0,
-          data: [],
-        });
-      }
+    // ==================================================
+    // 3. GET ALL DOCUMENTS
+    // ==================================================
 
+    const dsaIds = dsaUsers.map((dsa) => dsa.id);
 
-      // ==================================================
-      // 3. GET ALL DOCUMENTS
-      // ==================================================
+    const placeholders = dsaIds.map(() => "?").join(",");
 
-      const dsaIds = dsaUsers.map((dsa) => dsa.id);
-
-      const placeholders = dsaIds.map(() => "?").join(",");
-
-      const documentSql = `
+    const documentSql = `
         SELECT
           id,
           dsa_id,
@@ -2384,177 +3158,209 @@ router.get(
         ORDER BY id ASC
       `;
 
-      const documents = await query(
-        documentSql,
-        dsaIds
-      );
+    const documents = await query(documentSql, dsaIds);
+    // ==================================================
+    // 3.1 GET ALL VERIFIED PARTNERS
+    // ==================================================
 
+    const partnerSql = `
+  SELECT
+    id,
+    dsa_id,
+    partner_number,
+    name,
+    email,
+    mobile,
+    pan_number,
+    aadhaar_number,
+    created_at
+  FROM dsa_partner_details
+  WHERE dsa_id IN (${placeholders})
+  ORDER BY partner_number ASC
+`;
 
-      // ==================================================
-      // 4. MAP DOCUMENTS WITH DSA
-      // ==================================================
+    let partnerDetails = [];
 
-      const documentsMap = {};
+    // Only Partnership/LLP users
+    const partnershipDsaIds = dsaUsers
+      .filter((dsa) => dsa.constitution_type === "Partnership/LLP")
+      .map((dsa) => dsa.id);
 
-      for (const document of documents) {
-        if (!documentsMap[document.dsa_id]) {
-          documentsMap[document.dsa_id] = [];
-        }
+    if (partnershipDsaIds.length > 0) {
+      const partnershipPlaceholders = partnershipDsaIds
+        .map(() => "?")
+        .join(",");
 
-        documentsMap[document.dsa_id].push(document);
+      const partnerSql = `
+    SELECT
+      id,
+      dsa_id,
+      partner_number,
+      name,
+      email,
+      mobile,
+      pan_number,
+      aadhaar_number,
+      created_at
+    FROM dsa_partner_details
+    WHERE dsa_id IN (${partnershipPlaceholders})
+    ORDER BY partner_number ASC
+  `;
+
+      partnerDetails = await query(partnerSql, partnershipDsaIds);
+    }
+
+    // ==================================================
+    // 3.2 GET ALL PARTNER DOCUMENTS
+    // ==================================================
+
+    const partnerIds = partnerDetails.map((p) => p.id);
+
+    let partnerDocuments = [];
+
+    if (partnerIds.length > 0 && partnerDetails.length > 0) {
+      const partnerPlaceholders = partnerIds.map(() => "?").join(",");
+
+      const partnerDocumentSql = `
+    SELECT
+      id,
+      partner_id,
+      document_type,
+      original_name,
+      cloudinary_public_id,
+      cloudinary_url,
+      secure_url,
+      resource_type,
+      file_format,
+      file_size,
+      created_at
+    FROM dsa_partner_documents
+    WHERE partner_id IN (${partnerPlaceholders})
+    ORDER BY id ASC
+  `;
+
+      partnerDocuments = await query(partnerDocumentSql, partnerIds);
+    }
+    // ==================================================
+    // 3.3 GET ALL VERIFIED DIRECTORS
+    // ==================================================
+
+    let directorDetails = [];
+
+    // Only Private Limited users
+    const privateDsaIds = dsaUsers
+      .filter((dsa) => dsa.constitution_type === "Private Limited")
+      .map((dsa) => dsa.id);
+
+    if (privateDsaIds.length > 0) {
+      const directorPlaceholders = privateDsaIds.map(() => "?").join(",");
+
+      const directorSql = `
+    SELECT
+      id,
+      dsa_id,
+      director_number,
+      name,
+      email,
+      mobile,
+      pan_number,
+      aadhaar_number,
+      created_at
+    FROM dsa_directors
+    WHERE dsa_id IN (${directorPlaceholders})
+    ORDER BY director_number ASC
+  `;
+
+      directorDetails = await query(directorSql, privateDsaIds);
+    }
+    // ==================================================
+    // 4. MAP DOCUMENTS WITH DSA
+    // ==================================================
+
+    const documentsMap = {};
+
+    for (const document of documents) {
+      if (!documentsMap[document.dsa_id]) {
+        documentsMap[document.dsa_id] = [];
       }
 
-
-      // ==================================================
-      // 5. ADD DOCUMENTS TO EACH DSA
-      // ==================================================
-
-      const finalData = dsaUsers.map((dsa) => ({
-        ...dsa,
-
-        documents: documentsMap[dsa.id] || [],
-      }));
-
-
-      // ==================================================
-      // 6. SUCCESS RESPONSE
-      // ==================================================
-
-      return res.status(200).json({
-        status: true,
-        count: finalData.length,
-        data: finalData,
-      });
-
-    } catch (error) {
-      console.error("GET ALL DSA USERS ERROR:", error);
-
-      return res.status(500).json({
-        status: false,
-        message: "Failed to fetch DSA users",
-        error: error.message,
-      });
+      documentsMap[document.dsa_id].push(document);
     }
+    // ==================================================
+    // 4.1 MAP PARTNER DOCUMENTS
+    // ==================================================
+
+    const partnerDocumentMap = {};
+
+    for (const document of partnerDocuments) {
+      if (!partnerDocumentMap[document.partner_id]) {
+        partnerDocumentMap[document.partner_id] = [];
+      }
+
+      partnerDocumentMap[document.partner_id].push(document);
+    }
+
+    // ==================================================
+    // 4.2 MAP PARTNERS WITH DSA
+    // ==================================================
+
+    const partnersMap = {};
+
+    for (const partner of partnerDetails) {
+      partner.documents = partnerDocumentMap[partner.id] || [];
+
+      if (!partnersMap[partner.dsa_id]) {
+        partnersMap[partner.dsa_id] = [];
+      }
+
+      partnersMap[partner.dsa_id].push(partner);
+    }
+    // ==================================================
+    // 4.3 MAP DIRECTORS WITH DSA
+    // ==================================================
+
+    const directorsMap = {};
+
+    for (const director of directorDetails) {
+      if (!directorsMap[director.dsa_id]) {
+        directorsMap[director.dsa_id] = [];
+      }
+
+      directorsMap[director.dsa_id].push(director);
+    }
+
+    // ==================================================
+    // 5. ADD DOCUMENTS TO EACH DSA
+    // ==================================================
+
+   const finalData = dsaUsers.map((dsa) => ({
+     ...dsa,
+
+     documents: documentsMap[dsa.id] || [],
+
+     partners: partnersMap[dsa.id] || [],
+
+     directors: directorsMap[dsa.id] || [],
+   }));
+    // ==================================================
+    // 6. SUCCESS RESPONSE
+    // ==================================================
+
+    return res.status(200).json({
+      status: true,
+      count: finalData.length,
+      data: finalData,
+    });
+  } catch (error) {
+    console.error("GET ALL DSA USERS ERROR:", error);
+
+    return res.status(500).json({
+      status: false,
+      message: "Failed to fetch DSA users",
+      error: error.message,
+    });
   }
-);
-// ======================================================
-// DSA LOGIN
-//
-// POST /api/dsa/login
-//
-// IMPORTANT:
-// This endpoint is ONLY for DSA users.
-// Admin users from the `users` table cannot login here.
-// ======================================================
-
-// router.post("/dsa/login", async (req, res) => {
-//   try {
-//     const { email, password } = req.body;
-
-//     // ==================================================
-//     // STEP 1 - VALIDATE INPUT
-//     // ==================================================
-
-//     if (!email || !password) {
-//       return res.status(400).json({
-//         status: false,
-//         message: "Email and password are required",
-//       });
-//     }
-
-//     // ==================================================
-//     // STEP 2 - GET ONLY DSA USER
-//     // ==================================================
-
-//     const dsaResult = await query(
-//       `
-//       SELECT *
-//       FROM dsa_users
-//       WHERE email = ?
-//       AND role = 'DSA'
-//       LIMIT 1
-//       `,
-//       [email]
-//     );
-
-//     // ==================================================
-//     // STEP 3 - DSA NOT FOUND
-//     // ==================================================
-
-//     if (dsaResult.length === 0) {
-//       return res.status(401).json({
-//         status: false,
-//         message: "Invalid DSA credentials",
-//       });
-//     }
-
-//     const dsa = dsaResult[0];
-
-//     // ==================================================
-//     // STEP 4 - CHECK ACCOUNT STATUS
-//     // ==================================================
-
-//     if (String(dsa.status).toLowerCase() !== "active") {
-//       return res.status(403).json({
-//         status: false,
-//         message: `Your DSA account is ${dsa.status}`,
-//       });
-//     }
-
-//     // ==================================================
-//     // STEP 5 - VERIFY PASSWORD
-//     // ==================================================
-
-//     const passwordMatch = await bcrypt.compare(password, dsa.password);
-
-//     if (!passwordMatch) {
-//       return res.status(401).json({
-//         status: false,
-//         message: "Invalid DSA credentials",
-//       });
-//     }
-
-//     // ==================================================
-//     // STEP 6 - CREATE JWT TOKEN
-//     // ==================================================
-
-//     const token = jwt.sign(
-//       {
-//         id: dsa.id,
-//         role: "DSA",
-//         username: (dsa.name || "").split(" ")[0],
-//       },
-//       process.env.JWT_SECRET,
-//       {
-//         expiresIn: "7h",
-//       }
-//     );
-
-//     // ==================================================
-//     // STEP 7 - SUCCESS RESPONSE
-//     // ==================================================
-
-//     return res.status(200).json({
-//       status: true,
-//       id: dsa.id,
-//       role: "DSA",
-//       name: dsa.name,
-//       username: (dsa.name || "").split(" ")[0],
-//       email: dsa.email,
-//       token,
-//       must_change_password: Boolean(dsa.must_change_password),
-//       message: "DSA Login Success",
-//     });
-//   } catch (error) {
-//     console.error("DSA LOGIN ERROR:", error);
-
-//     return res.status(500).json({
-//       status: false,
-//       message: "Login failed",
-//     });
-//   }
-// });
-
+});
 
 
 module.exports = router;

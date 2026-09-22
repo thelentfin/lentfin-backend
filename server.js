@@ -50,7 +50,7 @@ const adminForgetPasswordRoutes = require("./routes/adminForgetPassword");
 const dashboardRoutes = require("./routes/dashboardroutes");
 const dsaForgetPasswordRoutes = require("./routes/dsaForgetPassword");
 
-
+const supportTicketRoutes = require("./routes/supportTicketRoutes");
 
 // ======================================================
 // CORS
@@ -94,6 +94,7 @@ app.use("/api/users", userRoutes);
 app.use("/api/admin", adminForgetPasswordRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/dsa-password", dsaForgetPasswordRoutes);
+app.use("/api/support-ticket", supportTicketRoutes);
 // ======================================================
 // SERVER START
 // ======================================================
