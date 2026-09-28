@@ -849,7 +849,7 @@ router.get(
   lc.updated_at
 
 FROM loan_cases lc
-INNER JOIN companies c
+LEFT JOIN companies c
 ON lc.company_id = c.id
 
 INNER JOIN banks b
@@ -1062,7 +1062,7 @@ c.status AS company_status,
 
         FROM loan_cases lc
 
-INNER JOIN companies c
+LEFT JOIN companies c
 ON lc.company_id = c.id
         /* ============================================
            BANK
@@ -1320,7 +1320,7 @@ lc.company_id,
             lc.updated_at
 
           FROM loan_cases lc
-INNER JOIN companies c
+LEFT JOIN companies c
 ON lc.company_id = c.id
           INNER JOIN banks b
             ON lc.bank_id = b.id

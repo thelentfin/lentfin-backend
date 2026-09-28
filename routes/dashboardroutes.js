@@ -206,6 +206,9 @@ router.get("/admin", requireAuth, async (req, res) => {
           lc.dsa_id,
           d.name AS dsa_name,
 
+          lc.company_id,
+          c.company_name,
+
           lc.bank_id,
           b.bank_name,
 
@@ -255,6 +258,9 @@ router.get("/admin", requireAuth, async (req, res) => {
         LEFT JOIN dsa_users d
           ON lc.dsa_id=d.id
 
+        LEFT JOIN companies c
+          ON lc.company_id=c.id
+
         LEFT JOIN banks b
           ON lc.bank_id=b.id
 
@@ -294,6 +300,8 @@ router.get("/admin", requireAuth, async (req, res) => {
           lc.case_number,
           lc.customer_name,
           lc.dsa_id,
+          lc.company_id,
+          c.company_name,
 
           d.name AS dsa_name
 
@@ -301,6 +309,9 @@ router.get("/admin", requireAuth, async (req, res) => {
 
         LEFT JOIN loan_cases lc
           ON p.case_id=lc.id
+
+        LEFT JOIN companies c
+          ON lc.company_id=c.id
 
         LEFT JOIN dsa_users d
           ON lc.dsa_id=d.id
@@ -356,6 +367,86 @@ router.get("/admin", requireAuth, async (req, res) => {
     ]);
 
     // ==================================================
+    // COMMISSION & FINANCIAL AGGREGATIONS (ADMIN SIDE)
+    // ==================================================
+
+    const paymentsMap = {};
+    (payments[0] || []).forEach((p) => {
+      if (p && p.case_id) paymentsMap[p.case_id] = p;
+    });
+
+    let totalSanctioned = 0;
+    let totalDisbursed = 0;
+    let earnedCommission = 0;
+    let pendingCommission = 0;
+    const dsaStats = {};
+
+    const enrichedLoanCases = (loanCases[0] || []).map((lc) => {
+      const p = paymentsMap[lc.id];
+      const sanctionAmt = Number(lc.sanction_amount || 0);
+      const disbAmt = Number(lc.disbursement_amount || 0);
+
+      totalSanctioned += sanctionAmt;
+      totalDisbursed += disbAmt;
+
+      const baseAmount = disbAmt > 0 ? disbAmt : sanctionAmt;
+      const paymentOption = String(p?.payment_option || lc.payment_option || "");
+      const paymentPct =
+        p?.payment_percentage !== undefined && p?.payment_percentage !== null
+          ? Number(p.payment_percentage)
+          : (paymentOption.includes("48") || paymentOption.includes("SPOT") ? 0.85 : 0.90);
+
+      let comm = 0;
+      if (p?.payment_amount && Number(p.payment_amount) > 0) {
+        comm = Number(p.payment_amount);
+      } else if (baseAmount > 0) {
+        comm = Math.round((baseAmount * paymentPct) / 100);
+      }
+
+      const status = String(lc.status || "").toUpperCase().trim();
+      const isAccepted = ["ACCEPTED", "APPROVED", "VERIFIED"].includes(status);
+      const isPending = ["SUBMITTED", "PENDING", "UNDER_REVIEW", "UNDER REVIEW"].includes(status);
+
+      if (isAccepted) {
+        earnedCommission += comm;
+      } else if (isPending) {
+        pendingCommission += comm;
+      }
+
+      // Group by DSA for Top 5 DSA Performance (only registered DSA partners)
+      const cleanDsaName = (lc.dsa_name || "").trim();
+      if (cleanDsaName && cleanDsaName.toLowerCase() !== "direct / unassigned" && lc.dsa_id) {
+        if (!dsaStats[cleanDsaName]) {
+          dsaStats[cleanDsaName] = {
+            name: cleanDsaName,
+            dsa_id: lc.dsa_id,
+            count: 0,
+            volume: 0,
+            commission: 0,
+          };
+        }
+        dsaStats[cleanDsaName].count += 1;
+        dsaStats[cleanDsaName].volume += sanctionAmt;
+        if (isAccepted) {
+          dsaStats[cleanDsaName].commission += comm;
+        }
+      }
+
+      return {
+        ...lc,
+        payment_amount: p?.payment_amount || comm,
+        payment_option: p?.payment_option || (paymentPct === 0.85 ? "Spot 48h (0.85%)" : "After 5 Days (0.90%)"),
+        payment_percentage: paymentPct,
+        commission_rate: paymentPct,
+        commission_amount: comm,
+      };
+    });
+
+    const topDsaPerformance = Object.values(dsaStats)
+      .sort((a, b) => b.count - a.count || b.volume - a.volume)
+      .slice(0, 5);
+
+    // ==================================================
     // FINAL RESPONSE
     // ==================================================
 
@@ -381,6 +472,14 @@ router.get("/admin", requireAuth, async (req, res) => {
           rejected: loanSummary[0][0].rejected || 0,
           submitted: loanSummary[0][0].submitted || 0,
           draft: loanSummary[0][0].draft || 0,
+
+          // Commission & Financial Aggregations
+          totalSanctionedAmount: totalSanctioned,
+          totalDisbursedAmount: totalDisbursed,
+          totalCommission: earnedCommission,
+          earnedCommission: earnedCommission,
+          pendingCommission: pendingCommission,
+          topDsaPerformance: topDsaPerformance,
         },
 
         companies: companies[0],
@@ -395,7 +494,8 @@ router.get("/admin", requireAuth, async (req, res) => {
 
         dsaUsers: dsaUsers[0],
         notifications: notifications[0],
-        loanCases: loanCases[0],
+        loanCases: enrichedLoanCases,
+        topDsaPerformance: topDsaPerformance,
         payments: payments[0],
         disbursements: disbursements[0],
         smAsmDetails: smAsmDetails[0],
@@ -663,6 +763,62 @@ router.get("/dsa", requireAuth, async (req, res) => {
     ]);
 
     // ==================================================
+    // COMMISSION & FINANCIAL AGGREGATIONS (DSA SIDE)
+    // ==================================================
+
+    const paymentsMap = {};
+    (payments[0] || []).forEach((p) => {
+      if (p && p.case_id) paymentsMap[p.case_id] = p;
+    });
+
+    let totalSanctioned = 0;
+    let totalDisbursed = 0;
+    let earnedCommission = 0;
+    let pendingCommission = 0;
+
+    const enrichedLoanCases = (loanCases[0] || []).map((lc) => {
+      const p = paymentsMap[lc.id];
+      const sanctionAmt = Number(lc.sanction_amount || 0);
+      const disbAmt = Number(lc.disbursement_amount || 0);
+
+      totalSanctioned += sanctionAmt;
+      totalDisbursed += disbAmt;
+
+      const baseAmount = disbAmt > 0 ? disbAmt : sanctionAmt;
+      const paymentOption = String(p?.payment_option || lc.payment_option || "");
+      const paymentPct =
+        p?.payment_percentage !== undefined && p?.payment_percentage !== null
+          ? Number(p.payment_percentage)
+          : (paymentOption.includes("48") || paymentOption.includes("SPOT") ? 0.85 : 0.90);
+
+      let comm = 0;
+      if (p?.payment_amount && Number(p.payment_amount) > 0) {
+        comm = Number(p.payment_amount);
+      } else if (baseAmount > 0) {
+        comm = Math.round((baseAmount * paymentPct) / 100);
+      }
+
+      const status = String(lc.status || "").toUpperCase().trim();
+      const isAccepted = ["ACCEPTED", "APPROVED", "VERIFIED"].includes(status);
+      const isPending = ["SUBMITTED", "PENDING", "UNDER_REVIEW", "UNDER REVIEW"].includes(status);
+
+      if (isAccepted) {
+        earnedCommission += comm;
+      } else if (isPending) {
+        pendingCommission += comm;
+      }
+
+      return {
+        ...lc,
+        payment_amount: p?.payment_amount || comm,
+        payment_option: p?.payment_option || (paymentPct === 0.85 ? "Spot 48h (0.85%)" : "After 5 Days (0.90%)"),
+        payment_percentage: paymentPct,
+        commission_rate: paymentPct,
+        commission_amount: comm,
+      };
+    });
+
+    // ==================================================
     // FINAL RESPONSE
     // ==================================================
 
@@ -679,10 +835,14 @@ router.get("/dsa", requireAuth, async (req, res) => {
           submitted: loanSummary[0][0].submitted || 0,
           draft: loanSummary[0][0].draft || 0,
           totalSanctionAmount:
-            loanSummary[0][0].totalSanctionAmount || 0,
+            loanSummary[0][0].totalSanctionAmount || totalSanctioned || 0,
+          totalDisbursedAmount: totalDisbursed,
+          earnedCommission: earnedCommission,
+          pendingCommission: pendingCommission,
+          totalCommission: earnedCommission,
         },
 
-        loanCases: loanCases[0],
+        loanCases: enrichedLoanCases,
         payments: payments[0],
         disbursements: disbursements[0],
         notifications: notifications[0],
