@@ -5,6 +5,13 @@ const { z } = require("zod");
 // ======================================================
 
 const loanCaseSchema = z.object({
+  company_id: z.coerce
+    .number({
+      required_error: "Company is required",
+      invalid_type_error: "Company must be a number",
+    })
+    .int()
+    .positive("Company is required"),
   // ====================================================
   // BANK ID
   // ====================================================

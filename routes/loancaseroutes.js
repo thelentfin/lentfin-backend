@@ -171,6 +171,7 @@ router.post(
       // ==================================================
 
       const {
+        company_id,
         bank_id,
         customer_name,
         mobile_number,
@@ -199,15 +200,16 @@ router.post(
       // VALIDATE REQUEST BODY
       // ==================================================
 
-      const validationResult = validateLoanCase({
-        bank_id,
-        customer_name,
-        mobile_number,
-        application_number,
-        loan_account_number,
-        sanction_amount,
-        remarks,
-      });
+     const validationResult = validateLoanCase({
+       company_id,
+       bank_id,
+       customer_name,
+       mobile_number,
+       application_number,
+       loan_account_number,
+       sanction_amount,
+       remarks,
+     });
 
       // ==================================================
       // VALIDATION FAILED
@@ -231,15 +233,16 @@ router.post(
 
       const validatedData = validationResult.data;
 
-      const {
-        bank_id: validatedBankId,
-        customer_name: validatedCustomerName,
-        mobile_number: validatedMobileNumber,
-        application_number: validatedApplicationNumber,
-        loan_account_number: validatedLoanAccountNumber,
-        sanction_amount: validatedSanctionAmount,
-        remarks: validatedRemarks,
-      } = validatedData;
+    const {
+      company_id: validatedCompanyId,
+      bank_id: validatedBankId,
+      customer_name: validatedCustomerName,
+      mobile_number: validatedMobileNumber,
+      application_number: validatedApplicationNumber,
+      loan_account_number: validatedLoanAccountNumber,
+      sanction_amount: validatedSanctionAmount,
+      remarks: validatedRemarks,
+    } = validatedData;
 
       // ==================================================
       // STEP 7
@@ -267,7 +270,8 @@ router.post(
             dsa_code,
             name,
             email,
-            status
+            status,
+            company_id
           FROM dsa_users
           WHERE id = ?
           LIMIT 1
@@ -291,6 +295,56 @@ router.post(
         return res.status(403).json({
           status: false,
           message: "DSA account is inactive",
+        });
+      }
+      // ==================================================
+      // STEP 9.1
+      // GET COMPANY FROM DSA
+      // ==================================================
+
+     const companyId = Number(validatedCompanyId);
+
+     if (!companyId) {
+       return res.status(400).json({
+         status: false,
+         message: "Company is required.",
+       });
+     }
+
+      // ==================================================
+      // STEP 9.2
+      // CHECK COMPANY EXISTS
+      // ==================================================
+
+      const companyResult = await query(
+        `
+    SELECT
+        id,
+        company_name,
+        status
+    FROM companies
+    WHERE id = ?
+    LIMIT 1
+`,
+        [companyId],
+      );
+
+      if (companyResult.length === 0) {
+        return res.status(404).json({
+          status: false,
+          message: "Company not found.",
+        });
+      }
+
+      // ==================================================
+      // STEP 9.3
+      // CHECK COMPANY ACTIVE
+      // ==================================================
+
+      if (String(companyResult[0].status).toLowerCase() !== "active") {
+        return res.status(400).json({
+          status: false,
+          message: "Selected company is inactive.",
         });
       }
 
@@ -402,38 +456,31 @@ router.post(
       const insertResult = await query(
         `
           INSERT INTO loan_cases (
-            case_number,
-            dsa_id,
-            bank_id,
-            customer_name,
-            mobile_number,
-            application_number,
-            loan_account_number,
-            sanction_amount,
-            status,
-            remarks
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    case_number,
+    dsa_id,
+    company_id,
+    bank_id,
+    customer_name,
+    mobile_number,
+    application_number,
+    loan_account_number,
+    sanction_amount,
+    status,
+    remarks
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           temporaryCaseNumber,
-
           dsaId,
-
+          companyId,
           validatedBankId,
-
           validatedCustomerName,
-
           validatedMobileNumber,
-
           validatedApplicationNumber ? validatedApplicationNumber : null,
-
           validatedLoanAccountNumber ? validatedLoanAccountNumber : null,
-
           validatedSanctionAmount,
-
           "DRAFT",
-
           validatedRemarks ? validatedRemarks : null,
         ],
       );
@@ -780,6 +827,8 @@ router.get(
   lc.id,
   lc.case_number,
   lc.dsa_id,
+  lc.company_id,
+  c.company_name,
   lc.bank_id,
   b.bank_name,
 
@@ -800,6 +849,8 @@ router.get(
   lc.updated_at
 
 FROM loan_cases lc
+INNER JOIN companies c
+ON lc.company_id = c.id
 
 INNER JOIN banks b
 ON lc.bank_id = b.id
@@ -952,6 +1003,7 @@ router.get(
           lc.id,
 lc.case_number,
 lc.dsa_id,
+lc.company_id,
 lc.bank_id,
 lc.customer_name,
 lc.mobile_number,
@@ -967,7 +1019,12 @@ lc.reject_reason,
 lc.remarks,
 lc.created_at,
 lc.updated_at,
+/* ============================================
+   COMPANY DETAILS
+   ============================================ */
 
+c.company_name,
+c.status AS company_status,
 
           /* ============================================
              BANK DETAILS
@@ -1005,7 +1062,8 @@ lc.updated_at,
 
         FROM loan_cases lc
 
-
+INNER JOIN companies c
+ON lc.company_id = c.id
         /* ============================================
            BANK
            ============================================ */
@@ -1061,6 +1119,11 @@ lc.updated_at,
             status: row.dsa_status,
           },
 
+          company: {
+            id: row.company_id,
+            company_name: row.company_name,
+            status: row.company_status,
+          },
           // ============================================
           // BANK DETAILS
           // ============================================
@@ -1079,6 +1142,7 @@ lc.updated_at,
             id: row.id,
             case_number: row.case_number,
             dsa_id: row.dsa_id,
+            company_id: row.company_id,
             bank_id: row.bank_id,
             customer_name: row.customer_name,
             mobile_number: row.mobile_number,
@@ -1236,7 +1300,8 @@ router.get(
             lc.case_number,
 
             lc.dsa_id,
-
+lc.company_id,
+    c.company_name,
             lc.bank_id,
             b.bank_name,
 
@@ -1255,7 +1320,8 @@ router.get(
             lc.updated_at
 
           FROM loan_cases lc
-
+INNER JOIN companies c
+ON lc.company_id = c.id
           INNER JOIN banks b
             ON lc.bank_id = b.id
 
@@ -1380,10 +1446,14 @@ router.put(
 
       const [caseResult] = await db.promise().execute(
         `
-        SELECT id,status,dsa_id
-        FROM loan_cases
-        WHERE id=?
-        LIMIT 1
+       SELECT
+    id,
+    status,
+    dsa_id,
+    company_id
+FROM loan_cases
+WHERE id=?
+LIMIT 1
         `,
         [case_id],
       );
