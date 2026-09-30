@@ -687,6 +687,11 @@ router.get(
           lcp.payment_percentage,
           lcp.loan_amount,
           lcp.payment_amount,
+          lcp.corporate_rate,
+          lcp.corporate_amount,
+          lcp.admin_profit,
+          lcp.corporate_payment_status,
+          lcp.corporate_received_at,
           lcp.created_at,
           lcp.updated_at,
 
@@ -699,6 +704,13 @@ router.get(
           lc.sanction_amount,
           lc.status AS case_status,
           lc.dsa_id,
+          lc.company_id,
+
+          /* ============================================
+             COMPANY DETAILS
+             ============================================ */
+
+          c.company_name,
 
           /* ============================================
              DSA DETAILS
@@ -713,6 +725,9 @@ router.get(
 
         INNER JOIN loan_cases lc
           ON lcp.case_id = lc.id
+
+        LEFT JOIN companies c
+          ON lc.company_id = c.id
 
         INNER JOIN dsa_users dsa
           ON lc.dsa_id = dsa.id
@@ -735,6 +750,11 @@ router.get(
             status: row.dsa_status,
           },
 
+          company: {
+            id: row.company_id,
+            company_name: row.company_name,
+          },
+
           loan_case: {
             case_id: row.case_id,
             case_number: row.case_number,
@@ -749,6 +769,11 @@ router.get(
             payment_percentage: row.payment_percentage,
             loan_amount: row.loan_amount,
             payment_amount: row.payment_amount,
+            corporate_rate: row.corporate_rate,
+            corporate_amount: row.corporate_amount,
+            admin_profit: row.admin_profit,
+            corporate_payment_status: row.corporate_payment_status,
+            corporate_received_at: row.corporate_received_at,
             created_at: row.created_at,
             updated_at: row.updated_at,
           },
@@ -782,6 +807,187 @@ router.get(
       });
     }
   },
+);
+
+// ======================================================
+// PUT - UPDATE CORPORATE RATE & SETTLEMENT STATUS (ADMIN)
+// ======================================================
+//
+// PUT /api/loan-payment/admin/corporate-rate/:case_id
+//
+// Body:
+// {
+//   "corporate_rate": 1.25,
+//   "corporate_payment_status": "PENDING" | "RECEIVED",
+//   "corporate_received_at": "2026-09-28" (optional)
+// }
+// ======================================================
+
+router.put(
+  "/admin/corporate-rate/:case_id",
+  authenticateAndAuthorize(),
+  async (req, res) => {
+    try {
+      const user = req.user;
+      if (!user) {
+        return res.status(401).json({
+          status: false,
+          message: "Authentication information not found",
+        });
+      }
+
+      const userRole = String(
+        user.role || user.user_role || user.user_type || "",
+      ).toLowerCase();
+
+      if (userRole !== "admin") {
+        return res.status(403).json({
+          status: false,
+          message: "Only admin can set or update corporate rates",
+        });
+      }
+
+      const { case_id } = req.params;
+      const { corporate_rate, corporate_payment_status, corporate_received_at } = req.body;
+
+      if (!case_id || !/^\d+$/.test(case_id)) {
+        return res.status(400).json({
+          status: false,
+          message: "Valid case_id is required",
+        });
+      }
+
+      const rateNum = Number(corporate_rate);
+      if (corporate_rate !== undefined && corporate_rate !== null && corporate_rate !== "" && (isNaN(rateNum) || rateNum < 0 || rateNum > 100)) {
+        return res.status(400).json({
+          status: false,
+          message: "Corporate rate must be a valid percentage between 0 and 100",
+        });
+      }
+
+      // Check loan case
+      const caseRows = await query(
+        `SELECT id, case_number, customer_name, sanction_amount, company_id FROM loan_cases WHERE id = ? LIMIT 1`,
+        [case_id]
+      );
+
+      if (caseRows.length === 0) {
+        return res.status(404).json({
+          status: false,
+          message: "Loan case not found",
+        });
+      }
+
+      const loanCase = caseRows[0];
+
+      // Check if payment row exists
+      const paymentRows = await query(
+        `SELECT * FROM loan_case_payments WHERE case_id = ? LIMIT 1`,
+        [case_id]
+      );
+
+      let loanAmount = paymentRows.length > 0
+        ? Number(paymentRows[0].loan_amount)
+        : Number(loanCase.sanction_amount || 0);
+
+      let dsaPaymentAmount = paymentRows.length > 0
+        ? Number(paymentRows[0].payment_amount || 0)
+        : 0;
+
+      let corpAmount = null;
+      let profit = null;
+
+      if (corporate_rate !== undefined && corporate_rate !== null && corporate_rate !== "") {
+        corpAmount = Math.round(((loanAmount * rateNum) / 100) * 100) / 100;
+        profit = Math.round((corpAmount - dsaPaymentAmount) * 100) / 100;
+      }
+
+      const statusVal = corporate_payment_status === "RECEIVED" ? "RECEIVED" : "PENDING";
+      const receivedAtVal = statusVal === "RECEIVED"
+        ? (corporate_received_at || new Date().toISOString().slice(0, 10))
+        : null;
+
+      if (paymentRows.length > 0) {
+        // UPDATE existing payment
+        await query(
+          `UPDATE loan_case_payments
+           SET corporate_rate = ?,
+               corporate_amount = ?,
+               admin_profit = ?,
+               corporate_payment_status = ?,
+               corporate_received_at = ?,
+               updated_at = NOW()
+           WHERE case_id = ?`,
+          [
+            corporate_rate !== undefined && corporate_rate !== "" ? rateNum : paymentRows[0].corporate_rate,
+            corpAmount !== null ? corpAmount : paymentRows[0].corporate_amount,
+            profit !== null ? profit : paymentRows[0].admin_profit,
+            statusVal,
+            receivedAtVal,
+            case_id,
+          ]
+        );
+      } else {
+        // Create initial payment record if it doesn't exist yet
+        await query(
+          `INSERT INTO loan_case_payments (
+             case_id,
+             payment_option,
+             payment_percentage,
+             loan_amount,
+             payment_amount,
+             corporate_rate,
+             corporate_amount,
+             admin_profit,
+             corporate_payment_status,
+             corporate_received_at
+           ) VALUES (?, 'SPOT_48_HOURS', 0.85, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            case_id,
+            loanAmount,
+            dsaPaymentAmount,
+            rateNum,
+            corpAmount,
+            profit,
+            statusVal,
+            receivedAtVal,
+          ]
+        );
+      }
+
+      // Fetch fresh payment data
+      const updatedPaymentRows = await query(
+        `SELECT lcp.*, c.company_name, lc.case_number, lc.customer_name
+         FROM loan_case_payments lcp
+         INNER JOIN loan_cases lc ON lcp.case_id = lc.id
+         LEFT JOIN companies c ON lc.company_id = c.id
+         WHERE lcp.case_id = ? LIMIT 1`,
+        [case_id]
+      );
+
+      // Socket.io refresh
+      const io = req.app.get("io");
+      if (io) {
+        io.to("admin").emit("dashboardUpdated", {
+          type: "corporateRateUpdated",
+          caseId: Number(case_id),
+        });
+      }
+
+      return res.status(200).json({
+        status: true,
+        message: "Corporate rate and settlement status updated successfully",
+        data: updatedPaymentRows[0] || null,
+      });
+    } catch (error) {
+      console.error("UPDATE CORPORATE RATE ERROR:", error);
+      return res.status(500).json({
+        status: false,
+        message: "Failed to update corporate rate",
+        error: error.message,
+      });
+    }
+  }
 );
 
 // ======================================================

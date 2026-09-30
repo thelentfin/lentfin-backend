@@ -7,7 +7,7 @@ const db = require("../db");
 // ===========================
 
 router.post("/add-company", (req, res) => {
-  const { company_name, company_code, company_email, company_mobile, address } =
+  const { company_name,  company_email, company_mobile } =
     req.body;
 
   if (!company_name) {
@@ -34,28 +34,29 @@ router.post("/add-company", (req, res) => {
       });
     }
 
-    const insertQuery = `
-        INSERT INTO companies
-        (
-            company_name,
-            company_code,
-            company_email,
-            company_mobile,
-            address
-        )
-        VALUES (?,?,?,?,?)
-        `;
+   const insertQuery = `
+INSERT INTO companies
+(
+    company_name,
+    company_email,
+    company_mobile
+)
+VALUES (?,?,?)
+`;
 
     db.query(
       insertQuery,
-      [company_name, company_code, company_email, company_mobile, address],
+      [company_name, company_email, company_mobile],
       (err, result) => {
-        if (err) {
-          return res.status(500).json({
-            status: false,
-            message: "Insert Error",
-          });
-        }
+       if (err) {
+         console.error("COMPANY INSERT ERROR:", err);
+
+         return res.status(500).json({
+           status: false,
+           message: "Insert Error",
+           error: err.message,
+         });
+       }
         
         // ==================================================
         // SOCKET.IO EVENT
@@ -133,10 +134,8 @@ router.put("/update-company/:id", (req, res) => {
 
   const {
     company_name,
-    company_code,
     company_email,
     company_mobile,
-    address,
     status,
   } = req.body;
 
@@ -146,13 +145,9 @@ router.put("/update-company/:id", (req, res) => {
 
     company_name=?,
 
-    company_code=?,
-
     company_email=?,
 
     company_mobile=?,
-
-    address=?,
 
     status=?
 
@@ -163,10 +158,8 @@ router.put("/update-company/:id", (req, res) => {
     query,
     [
       company_name,
-      company_code,
       company_email,
       company_mobile,
-      address,
       status,
       id,
     ],
