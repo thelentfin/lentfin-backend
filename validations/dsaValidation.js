@@ -4,7 +4,7 @@ const { z } = require("zod");
 // ======================================================
 //new added partner schema for partnership constitution type
 const partnerSchema = z.object({
-  partner_number: z.coerce.number().int().min(2),
+  partner_number: z.coerce.number().int().min(1),
 
   name: z.string().trim().min(2).max(150),
 
@@ -60,11 +60,11 @@ const directorSchema = z.object({
 const dsaSignupSchema = z
   .object({
     // tamara badha current fields
-    company_id: z.coerce.number().int().positive("Company is required"),
-    company_name: z.string().trim().min(1).max(200),
+    // company_id: z.coerce.number().int().positive("Company is required"),
+    // company_name: z.string().trim().min(1).max(200),
 
-    location_id: z.coerce.number().int().positive("Location is required"),
-    location: z.string().trim().min(1).max(150),
+    // location_id: z.coerce.number().int().positive("Location is required"),
+    // location: z.string().trim().min(1).max(150),
 
     name: z.string().trim().min(2).max(150),
 
@@ -105,6 +105,17 @@ const dsaSignupSchema = z
         "Partnership/LLP",
         "Private Limited",
       ])
+      .optional()
+      .or(z.literal("")),
+    dsa_location: z
+      .string()
+      .trim()
+      .min(1, "DSA Location is required")
+      .max(150, "DSA Location must not exceed 150 characters"),
+    msme_number: z
+      .string()
+      .trim()
+      .max(50, "MSME Number must not exceed 50 characters")
       .optional()
       .or(z.literal("")),
 
@@ -201,20 +212,20 @@ const dsaSignupSchema = z
       }
     }
     // ======================================================
-// DIRECTORS ONLY FOR PRIVATE LIMITED
-// ======================================================
+    // DIRECTORS ONLY FOR PRIVATE LIMITED
+    // ======================================================
 
-if (
-  data.constitution_type !== "Private Limited" &&
-  data.directors &&
-  data.directors.length > 0
-) {
-  ctx.addIssue({
-    code: z.ZodIssueCode.custom,
-    path: ["directors"],
-    message: "Directors are allowed only for Private Limited.",
-  });
-}
+    if (
+      data.constitution_type !== "Private Limited" &&
+      data.directors &&
+      data.directors.length > 0
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["directors"],
+        message: "Directors are allowed only for Private Limited.",
+      });
+    }
   });
 
 // ======================================================
