@@ -427,7 +427,6 @@ router.post(
             "aadhaar_file",
             "bank_file",
             "firm_pan_file",
-            "udyam_file",
             "gst_file",
           ];
 
@@ -921,9 +920,6 @@ router.post(
         msme_certificate_file: "MSME_CERTIFICATE",
       };
 
-      // ==================================================
-      // 10. UPLOAD DOCUMENTS TO CLOUDINARY
-      // ==================================================
       // ==================================================
       // 10. UPLOAD DOCUMENTS TO CLOUDINARY
       // ==================================================
@@ -1449,7 +1445,6 @@ r.msme_number,
   },
 );
 
-
 // ======================================================
 // GET SINGLE DSA REQUEST DETAILS
 //
@@ -1486,10 +1481,7 @@ router.get(
         WHERE r.id = ?
       `;
 
-      const requestResult = await query(
-        requestSql,
-        [id],
-      );
+      const requestResult = await query(requestSql, [id]);
 
       // ======================================================
       // REQUEST NOT FOUND
@@ -1539,10 +1531,7 @@ router.get(
         ORDER BY id ASC
       `;
 
-      const documents = await query(
-        documentSql,
-        [id],
-      );
+      const documents = await query(documentSql, [id]);
 
       // ======================================================
       // 3. PARTNERS
@@ -1552,9 +1541,7 @@ router.get(
 
       let partners = [];
 
-      if (
-        request.constitution_type === "Partnership/LLP"
-      ) {
+      if (request.constitution_type === "Partnership/LLP") {
         // ----------------------------------------------------
         // 3.1 GET PARTNER DETAILS
         // ----------------------------------------------------
@@ -1578,10 +1565,7 @@ router.get(
           ORDER BY partner_number ASC
         `;
 
-        partners = await query(
-          partnerSql,
-          [id],
-        );
+        partners = await query(partnerSql, [id]);
 
         // ----------------------------------------------------
         // 3.2 GET DOCUMENTS FOR EACH PARTNER
@@ -1608,10 +1592,7 @@ router.get(
             ORDER BY id ASC
           `;
 
-          partner.documents = await query(
-            partnerDocumentSql,
-            [partner.id],
-          );
+          partner.documents = await query(partnerDocumentSql, [partner.id]);
         }
       }
 
@@ -1623,9 +1604,7 @@ router.get(
 
       let directors = [];
 
-      if (
-        request.constitution_type === "Private Limited"
-      ) {
+      if (request.constitution_type === "Private Limited") {
         // ----------------------------------------------------
         // 4.1 GET DIRECTOR DETAILS
         // ----------------------------------------------------
@@ -1649,10 +1628,7 @@ router.get(
           ORDER BY director_number ASC
         `;
 
-        directors = await query(
-          directorSql,
-          [id],
-        );
+        directors = await query(directorSql, [id]);
 
         // ----------------------------------------------------
         // 4.2 GET DOCUMENTS FOR EACH DIRECTOR
@@ -1679,10 +1655,7 @@ router.get(
             ORDER BY id ASC
           `;
 
-          director.documents = await query(
-            directorDocumentSql,
-            [director.id],
-          );
+          director.documents = await query(directorDocumentSql, [director.id]);
         }
       }
 
@@ -1727,10 +1700,7 @@ router.get(
         },
       });
     } catch (error) {
-      console.error(
-        "GET SINGLE DSA REQUEST ERROR:",
-        error,
-      );
+      console.error("GET SINGLE DSA REQUEST ERROR:", error);
 
       return res.status(500).json({
         status: false,
@@ -1772,10 +1742,7 @@ router.put(
     try {
       const { id } = req.params;
 
-      const {
-        reviewed_by,
-        rejection_reason,
-      } = req.body;
+      const { reviewed_by, rejection_reason } = req.body;
 
       // ==================================================
       // 1. VALIDATE REVIEWER
@@ -1792,10 +1759,7 @@ router.put(
       // 2. VALIDATE REJECTION REASON
       // ==================================================
 
-      if (
-        !rejection_reason ||
-        rejection_reason.trim().length < 5
-      ) {
+      if (!rejection_reason || rejection_reason.trim().length < 5) {
         return res.status(400).json({
           status: false,
           message: "Rejection reason is required",
@@ -1820,10 +1784,7 @@ router.put(
         WHERE id = ?
       `;
 
-      const requestResult = await query(
-        requestSql,
-        [id],
-      );
+      const requestResult = await query(requestSql, [id]);
 
       // ==================================================
       // REQUEST NOT FOUND
@@ -1864,10 +1825,7 @@ router.put(
         WHERE id = ?
       `;
 
-      const reviewerResult = await query(
-        reviewerSql,
-        [reviewed_by],
-      );
+      const reviewerResult = await query(reviewerSql, [reviewed_by]);
 
       // ==================================================
       // REVIEWER NOT FOUND
@@ -1889,8 +1847,7 @@ router.put(
       if (reviewer.status !== "Active") {
         return res.status(403).json({
           status: false,
-          message:
-            "Corporate DSA reviewer account is inactive",
+          message: "Corporate DSA reviewer account is inactive",
         });
       }
 
@@ -1942,10 +1899,7 @@ router.put(
       // 7. PARTNERSHIP / LLP DOCUMENT CLEANUP
       // ==================================================
 
-      if (
-        request.constitution_type ===
-        "Partnership/LLP"
-      ) {
+      if (request.constitution_type === "Partnership/LLP") {
         // ----------------------------------------------
         // GET ALL SIGNUP PARTNERS
         // ----------------------------------------------
@@ -2034,10 +1988,7 @@ router.put(
       // PASSPORT
       // ==================================================
 
-      if (
-        request.constitution_type ===
-        "Private Limited"
-      ) {
+      if (request.constitution_type === "Private Limited") {
         // ----------------------------------------------
         // GET ALL SIGNUP DIRECTORS
         // ----------------------------------------------
@@ -2058,17 +2009,16 @@ router.put(
         // ----------------------------------------------
 
         for (const director of signupDirectors) {
-          const directorDocuments =
-            await query(
-              `
+          const directorDocuments = await query(
+            `
                 SELECT
                   cloudinary_public_id,
                   resource_type
                 FROM dsa_signup_director_documents
                 WHERE director_id = ?
               `,
-              [director.id],
-            );
+            [director.id],
+          );
 
           // --------------------------------------------
           // DELETE EACH DIRECTOR DOCUMENT
@@ -2147,14 +2097,11 @@ router.put(
           AND status = 'PENDING'
       `;
 
-      const updateResult = await query(
-        updateSql,
-        [
-          rejection_reason.trim(),
-          reviewed_by,
-          id,
-        ],
-      );
+      const updateResult = await query(updateSql, [
+        rejection_reason.trim(),
+        reviewed_by,
+        id,
+      ]);
 
       // ==================================================
       // CHECK UPDATE
@@ -2180,8 +2127,7 @@ router.put(
           to: request.email,
           toName: request.name,
 
-          subject:
-            `LentFin DSA Request Rejected #${request.id}`,
+          subject: `LentFin DSA Request Rejected #${request.id}`,
 
           htmlContent: `
             <!DOCTYPE html>
@@ -2470,19 +2416,13 @@ router.put(
         // CHECK BREVO RESPONSE
         // ==================================================
 
-        if (
-          emailResult &&
-          emailResult.success === true
-        ) {
+        if (emailResult && emailResult.success === true) {
           emailSent = true;
-          emailMessageId =
-            emailResult.messageId || null;
+          emailMessageId = emailResult.messageId || null;
         } else {
           emailSent = false;
 
-          emailError =
-            emailResult?.error ||
-            "Unknown email sending error";
+          emailError = emailResult?.error || "Unknown email sending error";
         }
       } catch (emailSendError) {
         emailSent = false;
@@ -2499,25 +2439,19 @@ router.put(
       // ADMIN DASHBOARD
       // ----------------------------------------------
 
-      io.to("admin").emit(
-        "dashboardUpdated",
-        {
-          type: "dsaRequestRejected",
-          requestId: request.id,
-        },
-      );
+      io.to("admin").emit("dashboardUpdated", {
+        type: "dsaRequestRejected",
+        requestId: request.id,
+      });
 
       // ----------------------------------------------
       // CORPORATE DASHBOARD
       // ----------------------------------------------
 
-      io.to("corporate").emit(
-        "dashboardUpdated",
-        {
-          type: "dsaRequestRejected",
-          requestId: request.id,
-        },
-      );
+      io.to("corporate").emit("dashboardUpdated", {
+        type: "dsaRequestRejected",
+        requestId: request.id,
+      });
 
       // ==================================================
       // 13. FINAL RESPONSE
@@ -2541,23 +2475,17 @@ router.put(
             email: reviewer.email,
           },
 
-          rejection_reason:
-            rejection_reason.trim(),
+          rejection_reason: rejection_reason.trim(),
 
           email_sent: emailSent,
 
-          email_message_id:
-            emailMessageId,
+          email_message_id: emailMessageId,
 
           email_error: emailError,
         },
       });
-
     } catch (error) {
-      console.error(
-        "DSA REJECTION ERROR:",
-        error,
-      );
+      console.error("DSA REJECTION ERROR:", error);
 
       return res.status(500).json({
         status: false,
@@ -2613,22 +2541,15 @@ router.put(
       // HELPER FOR TRANSACTION QUERIES
       // ==================================================
 
-      const connectionQuery = (
-        sql,
-        params = [],
-      ) => {
+      const connectionQuery = (sql, params = []) => {
         return new Promise((resolve, reject) => {
-          connection.query(
-            sql,
-            params,
-            (err, result) => {
-              if (err) {
-                reject(err);
-              } else {
-                resolve(result);
-              }
-            },
-          );
+          connection.query(sql, params, (err, result) => {
+            if (err) {
+              reject(err);
+            } else {
+              resolve(result);
+            }
+          });
         });
       };
 
@@ -2654,10 +2575,7 @@ router.put(
         LIMIT 1
       `;
 
-      const requestResult = await query(
-        requestSql,
-        [id],
-      );
+      const requestResult = await query(requestSql, [id]);
 
       if (requestResult.length === 0) {
         return res.status(404).json({
@@ -2695,10 +2613,7 @@ router.put(
         LIMIT 1
       `;
 
-      const reviewerResult = await query(
-        reviewerSql,
-        [verified_by],
-      );
+      const reviewerResult = await query(reviewerSql, [verified_by]);
 
       if (reviewerResult.length === 0) {
         return res.status(400).json({
@@ -2720,25 +2635,19 @@ router.put(
       // 5. GENERATE DSA CODE
       // ==================================================
 
-      const dsaCode =
-        `DSA-${String(id).padStart(5, "0")}`;
+      const dsaCode = `DSA-${String(id).padStart(5, "0")}`;
 
       // ==================================================
       // 6. GENERATE TEMPORARY PASSWORD
       // ==================================================
 
-      const temporaryPassword =
-        `Dsa@${Date.now().toString().slice(-6)}`;
+      const temporaryPassword = `Dsa@${Date.now().toString().slice(-6)}`;
 
       // ==================================================
       // 7. HASH PASSWORD
       // ==================================================
 
-      const hashedPassword =
-        await bcrypt.hash(
-          temporaryPassword,
-          12,
-        );
+      const hashedPassword = await bcrypt.hash(temporaryPassword, 12);
 
       // ==================================================
       // 8. IMPORTANT PASSWORD SANITY CHECK
@@ -2747,11 +2656,10 @@ router.put(
       // BEFORE inserting into database.
       // ==================================================
 
-      const generatedPasswordCheck =
-        await bcrypt.compare(
-          temporaryPassword,
-          hashedPassword,
-        );
+      const generatedPasswordCheck = await bcrypt.compare(
+        temporaryPassword,
+        hashedPassword,
+      );
 
       if (!generatedPasswordCheck) {
         throw new Error(
@@ -2759,33 +2667,25 @@ router.put(
         );
       }
 
-      console.log(
-        "DSA PASSWORD GENERATION CHECK:",
-        {
-          hashLength: hashedPassword.length,
-          hashPrefix: hashedPassword.substring(
-            0,
-            4,
-          ),
-          passwordMatch: generatedPasswordCheck,
-        },
-      );
+      console.log("DSA PASSWORD GENERATION CHECK:", {
+        hashLength: hashedPassword.length,
+        hashPrefix: hashedPassword.substring(0, 4),
+        passwordMatch: generatedPasswordCheck,
+      });
 
       // ==================================================
       // 9. GET MYSQL CONNECTION
       // ==================================================
 
-      connection = await new Promise(
-        (resolve, reject) => {
-          db.getConnection((err, conn) => {
-            if (err) {
-              return reject(err);
-            }
+      connection = await new Promise((resolve, reject) => {
+        db.getConnection((err, conn) => {
+          if (err) {
+            return reject(err);
+          }
 
-            resolve(conn);
-          });
-        },
-      );
+          resolve(conn);
+        });
+      });
 
       // ==================================================
       // 10. START TRANSACTION
@@ -2816,19 +2716,14 @@ router.put(
              OR mobile = ?
           LIMIT 1
         `,
-        [
-          request.email,
-          request.mobile,
-        ],
+        [request.email, request.mobile],
       );
 
       if (existingDsa.length > 0) {
         const existing = existingDsa[0];
 
         throw Object.assign(
-          new Error(
-            "DSA already exists with this email or mobile",
-          ),
+          new Error("DSA already exists with this email or mobile"),
           {
             code: "ER_DUP_ENTRY",
           },
@@ -2935,11 +2830,7 @@ router.put(
         verified_by,
       ];
 
-      const dsaResult =
-        await connectionQuery(
-          insertDsaSql,
-          insertDsaValues,
-        );
+      const dsaResult = await connectionQuery(insertDsaSql, insertDsaValues);
 
       const dsaId = dsaResult.insertId;
 
@@ -2955,9 +2846,8 @@ router.put(
       // - no fake login credentials
       // ==================================================
 
-      const storedPasswordResult =
-        await connectionQuery(
-          `
+      const storedPasswordResult = await connectionQuery(
+        `
             SELECT
               id,
               email,
@@ -2967,58 +2857,41 @@ router.put(
             WHERE id = ?
             LIMIT 1
           `,
-          [dsaId],
-        );
+        [dsaId],
+      );
 
-      if (
-        storedPasswordResult.length === 0
-      ) {
+      if (storedPasswordResult.length === 0) {
         throw new Error(
           "DSA user was created but password record could not be read",
         );
       }
 
-      const storedDsa =
-        storedPasswordResult[0];
+      const storedDsa = storedPasswordResult[0];
 
-      console.log(
-        "DSA STORED PASSWORD CHECK:",
-        {
-          dsaId: storedDsa.id,
-          email: storedDsa.email,
-          hashLength:
-            storedDsa.password_length,
-          hashPrefix:
-            storedDsa.password
-              ? storedDsa.password.substring(
-                  0,
-                  4,
-                )
-              : null,
-        },
-      );
+      console.log("DSA STORED PASSWORD CHECK:", {
+        dsaId: storedDsa.id,
+        email: storedDsa.email,
+        hashLength: storedDsa.password_length,
+        hashPrefix: storedDsa.password
+          ? storedDsa.password.substring(0, 4)
+          : null,
+      });
 
       // --------------------------------------------------
       // CHECK STORED HASH
       // --------------------------------------------------
 
-      const storedPasswordMatch =
-        await bcrypt.compare(
-          temporaryPassword,
-          storedDsa.password,
-        );
-
-      console.log(
-        "DSA FINAL PASSWORD CHECK:",
-        {
-          dsaId,
-          email: storedDsa.email,
-          hashLength:
-            storedDsa.password_length,
-          passwordMatch:
-            storedPasswordMatch,
-        },
+      const storedPasswordMatch = await bcrypt.compare(
+        temporaryPassword,
+        storedDsa.password,
       );
+
+      console.log("DSA FINAL PASSWORD CHECK:", {
+        dsaId,
+        email: storedDsa.email,
+        hashLength: storedDsa.password_length,
+        passwordMatch: storedPasswordMatch,
+      });
 
       if (!storedPasswordMatch) {
         throw new Error(
@@ -3030,17 +2903,13 @@ router.put(
       // 14. COPY PRIVATE LIMITED DIRECTORS
       // ==================================================
 
-      if (
-        request.constitution_type ===
-        "Private Limited"
-      ) {
+      if (request.constitution_type === "Private Limited") {
         // ----------------------------------------------
         // GET SIGNUP DIRECTORS
         // ----------------------------------------------
 
-        const signupDirectors =
-          await connectionQuery(
-            `
+        const signupDirectors = await connectionQuery(
+          `
               SELECT
                 id,
                 director_number,
@@ -3053,8 +2922,8 @@ router.put(
               WHERE request_id = ?
               ORDER BY director_number ASC
             `,
-            [id],
-          );
+          [id],
+        );
 
         // ----------------------------------------------
         // MAP:
@@ -3070,12 +2939,9 @@ router.put(
         // COPY DIRECTOR DETAILS
         // ----------------------------------------------
 
-        for (
-          const director of signupDirectors
-        ) {
-          const directorResult =
-            await connectionQuery(
-              `
+        for (const director of signupDirectors) {
+          const directorResult = await connectionQuery(
+            `
                 INSERT INTO dsa_directors
                 (
                   dsa_id,
@@ -3088,35 +2954,29 @@ router.put(
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
               `,
-              [
-                dsaId,
-                director.director_number,
-                director.name,
-                director.email || null,
-                director.mobile || null,
-                director.pan_number || null,
-                director.aadhaar_number || null,
-              ],
-            );
+            [
+              dsaId,
+              director.director_number,
+              director.name,
+              director.email || null,
+              director.mobile || null,
+              director.pan_number || null,
+              director.aadhaar_number || null,
+            ],
+          );
 
-          directorIdMap[
-            director.id
-          ] = directorResult.insertId;
+          directorIdMap[director.id] = directorResult.insertId;
         }
 
         // ----------------------------------------------
         // COPY DIRECTOR DOCUMENTS
         // ----------------------------------------------
 
-        for (
-          const director of signupDirectors
-        ) {
-          const finalDirectorId =
-            directorIdMap[director.id];
+        for (const director of signupDirectors) {
+          const finalDirectorId = directorIdMap[director.id];
 
-          const directorDocuments =
-            await connectionQuery(
-              `
+          const directorDocuments = await connectionQuery(
+            `
                 SELECT
                   id,
                   director_id,
@@ -3132,12 +2992,10 @@ router.put(
                 WHERE director_id = ?
                 ORDER BY id ASC
               `,
-              [director.id],
-            );
+            [director.id],
+          );
 
-          for (
-            const document of directorDocuments
-          ) {
+          for (const document of directorDocuments) {
             await connectionQuery(
               `
                 INSERT INTO dsa_director_documents
@@ -3174,20 +3032,16 @@ router.put(
       // 15. COPY PARTNERSHIP / LLP PARTNERS
       // ==================================================
 
-      if (
-        request.constitution_type ===
-        "Partnership/LLP"
-      ) {
-        const signupPartners =
-          await connectionQuery(
-            `
+      if (request.constitution_type === "Partnership/LLP") {
+        const signupPartners = await connectionQuery(
+          `
               SELECT *
               FROM dsa_signup_partners
               WHERE request_id = ?
               ORDER BY partner_number ASC
             `,
-            [id],
-          );
+          [id],
+        );
 
         // ----------------------------------------------
         // MAP:
@@ -3203,12 +3057,9 @@ router.put(
         // COPY PARTNER DETAILS
         // ----------------------------------------------
 
-        for (
-          const partner of signupPartners
-        ) {
-          const partnerResult =
-            await connectionQuery(
-              `
+        for (const partner of signupPartners) {
+          const partnerResult = await connectionQuery(
+            `
                 INSERT INTO dsa_partner_details
                 (
                   dsa_id,
@@ -3221,43 +3072,36 @@ router.put(
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
               `,
-              [
-                dsaId,
-                partner.partner_number,
-                partner.name,
-                partner.email || null,
-                partner.mobile || null,
-                partner.pan_number || null,
-                partner.aadhaar_number || null,
-              ],
-            );
+            [
+              dsaId,
+              partner.partner_number,
+              partner.name,
+              partner.email || null,
+              partner.mobile || null,
+              partner.pan_number || null,
+              partner.aadhaar_number || null,
+            ],
+          );
 
-          partnerIdMap[
-            partner.id
-          ] = partnerResult.insertId;
+          partnerIdMap[partner.id] = partnerResult.insertId;
         }
 
         // ----------------------------------------------
         // COPY PARTNER DOCUMENTS
         // ----------------------------------------------
 
-        for (
-          const partner of signupPartners
-        ) {
-          const partnerDocuments =
-            await connectionQuery(
-              `
+        for (const partner of signupPartners) {
+          const partnerDocuments = await connectionQuery(
+            `
                 SELECT *
                 FROM dsa_signup_partner_documents
                 WHERE partner_id = ?
                 ORDER BY id ASC
               `,
-              [partner.id],
-            );
+            [partner.id],
+          );
 
-          for (
-            const doc of partnerDocuments
-          ) {
+          for (const doc of partnerDocuments) {
             await connectionQuery(
               `
                 INSERT INTO dsa_partner_documents
@@ -3275,9 +3119,7 @@ router.put(
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
               `,
               [
-                partnerIdMap[
-                  partner.id
-                ],
+                partnerIdMap[partner.id],
                 doc.document_type,
                 doc.original_name,
                 doc.cloudinary_public_id,
@@ -3296,9 +3138,8 @@ router.put(
       // 16. GET SIGNUP DOCUMENTS
       // ==================================================
 
-      const documents =
-        await connectionQuery(
-          `
+      const documents = await connectionQuery(
+        `
             SELECT
               id,
               document_type,
@@ -3313,8 +3154,8 @@ router.put(
             WHERE request_id = ?
             ORDER BY id ASC
           `,
-          [id],
-        );
+        [id],
+      );
 
       // ==================================================
       // 17. COPY MAIN DOCUMENTS
@@ -3325,9 +3166,7 @@ router.put(
       // Includes MSME_CERTIFICATE if uploaded.
       // ==================================================
 
-      for (
-        const document of documents
-      ) {
+      for (const document of documents) {
         await connectionQuery(
           `
             INSERT INTO dsa_documents
@@ -3362,9 +3201,8 @@ router.put(
       // 18. UPDATE SIGNUP REQUEST
       // ==================================================
 
-      const updateRequestResult =
-        await connectionQuery(
-          `
+      const updateRequestResult = await connectionQuery(
+        `
             UPDATE dsa_signup_requests
             SET
               status = 'VERIFIED',
@@ -3373,18 +3211,11 @@ router.put(
             WHERE id = ?
               AND status = 'PENDING'
           `,
-          [
-            verified_by,
-            id,
-          ],
-        );
+        [verified_by, id],
+      );
 
-      if (
-        updateRequestResult.affectedRows !== 1
-      ) {
-        throw new Error(
-          "DSA signup request could not be marked as VERIFIED",
-        );
+      if (updateRequestResult.affectedRows !== 1) {
+        throw new Error("DSA signup request could not be marked as VERIFIED");
       }
 
       // ==================================================
@@ -3448,15 +3279,13 @@ router.put(
       let emailError = null;
 
       try {
-        const emailResult =
-          await sendEmail({
-            to: request.email,
-            toName: request.name,
+        const emailResult = await sendEmail({
+          to: request.email,
+          toName: request.name,
 
-            subject:
-              "LentFin DSA Account Verified",
+          subject: "LentFin DSA Account Verified",
 
-            htmlContent: `
+          htmlContent: `
               <!DOCTYPE html>
 
               <html>
@@ -3689,34 +3518,25 @@ router.put(
 
               </html>
             `,
-          });
+        });
 
         // ==================================================
         // CHECK BREVO RESPONSE
         // ==================================================
 
-        if (
-          emailResult &&
-          emailResult.success === true
-        ) {
+        if (emailResult && emailResult.success === true) {
           emailSent = true;
 
-          emailMessageId =
-            emailResult.messageId || null;
+          emailMessageId = emailResult.messageId || null;
         } else {
           emailSent = false;
 
-          emailError =
-            emailResult?.error ||
-            "Unknown email sending error";
+          emailError = emailResult?.error || "Unknown email sending error";
         }
-
       } catch (emailSendError) {
-
         emailSent = false;
 
-        emailError =
-          emailSendError.message;
+        emailError = emailSendError.message;
       }
 
       // ==================================================
@@ -3729,36 +3549,27 @@ router.put(
       // ADMIN
       // ----------------------------------------------
 
-      io.to("admin").emit(
-        "dashboardUpdated",
-        {
-          type: "dsaVerified",
-          dsaId,
-        },
-      );
+      io.to("admin").emit("dashboardUpdated", {
+        type: "dsaVerified",
+        dsaId,
+      });
 
       // ----------------------------------------------
       // CORPORATE
       // ----------------------------------------------
 
-      io.to("corporate").emit(
-        "dashboardUpdated",
-        {
-          type: "dsaVerified",
-          dsaId,
-        },
-      );
+      io.to("corporate").emit("dashboardUpdated", {
+        type: "dsaVerified",
+        dsaId,
+      });
 
       // ----------------------------------------------
       // DSA
       // ----------------------------------------------
 
-      io.to(`dsa_${dsaId}`).emit(
-        "accountVerified",
-        {
-          dsaId,
-        },
-      );
+      io.to(`dsa_${dsaId}`).emit("accountVerified", {
+        dsaId,
+      });
 
       // ==================================================
       // 24. FINAL RESPONSE
@@ -3784,35 +3595,25 @@ router.put(
 
           email_sent: emailSent,
 
-          email_message_id:
-            emailMessageId,
+          email_message_id: emailMessageId,
 
-          email_error:
-            emailError,
+          email_error: emailError,
         },
       });
-
     } catch (error) {
-
       // ==================================================
       // ROLLBACK
       // ==================================================
 
       if (connection) {
-
         try {
-          await new Promise(
-            (resolve) => {
-              connection.rollback(() => {
-                resolve();
-              });
-            },
-          );
+          await new Promise((resolve) => {
+            connection.rollback(() => {
+              resolve();
+            });
+          });
         } catch (rollbackError) {
-          console.error(
-            "ROLLBACK ERROR:",
-            rollbackError,
-          );
+          console.error("ROLLBACK ERROR:", rollbackError);
         }
 
         connection.release();
@@ -3820,10 +3621,7 @@ router.put(
         connection = null;
       }
 
-      console.error(
-        "DSA VERIFICATION ERROR:",
-        error,
-      );
+      console.error("DSA VERIFICATION ERROR:", error);
 
       // ==================================================
       // DUPLICATE ERROR
@@ -3832,8 +3630,7 @@ router.put(
       if (error.code === "ER_DUP_ENTRY") {
         return res.status(409).json({
           status: false,
-          message:
-            "DSA already exists with this email, mobile or DSA code",
+          message: "DSA already exists with this email, mobile or DSA code",
         });
       }
 
@@ -3843,9 +3640,7 @@ router.put(
 
       if (
         error.message &&
-        error.message.includes(
-          "Temporary password does not match",
-        )
+        error.message.includes("Temporary password does not match")
       ) {
         return res.status(500).json({
           status: false,
@@ -3867,23 +3662,19 @@ router.put(
   },
 );
 
-
 // ======================================================
 // GET ALL VERIFIED DSA USERS
 //
 // GET /api/dsa/users
 // ======================================================
 
-router.get(
-  "/users",
-  authenticateAndAuthorize(),
-  async (req, res) => {
-    try {
-      // ==================================================
-      // 1. GET ALL DSA USERS
-      // ==================================================
+router.get("/users", authenticateAndAuthorize(), async (req, res) => {
+  try {
+    // ==================================================
+    // 1. GET ALL DSA USERS
+    // ==================================================
 
-      const dsaSql = `
+    const dsaSql = `
         SELECT
           d.id,
           d.source_request_id,
@@ -3955,37 +3746,33 @@ router.get(
         ORDER BY d.id DESC
       `;
 
-      const dsaUsers = await query(dsaSql);
+    const dsaUsers = await query(dsaSql);
 
-      // ==================================================
-      // 2. IF NO DSA FOUND
-      // ==================================================
+    // ==================================================
+    // 2. IF NO DSA FOUND
+    // ==================================================
 
-      if (dsaUsers.length === 0) {
-        return res.status(200).json({
-          status: true,
-          count: 0,
-          data: [],
-        });
-      }
+    if (dsaUsers.length === 0) {
+      return res.status(200).json({
+        status: true,
+        count: 0,
+        data: [],
+      });
+    }
 
-      // ==================================================
-      // COMMON DSA IDS
-      // ==================================================
+    // ==================================================
+    // COMMON DSA IDS
+    // ==================================================
 
-      const dsaIds = dsaUsers.map(
-        (dsa) => dsa.id,
-      );
+    const dsaIds = dsaUsers.map((dsa) => dsa.id);
 
-      const dsaPlaceholders = dsaIds
-        .map(() => "?")
-        .join(",");
+    const dsaPlaceholders = dsaIds.map(() => "?").join(",");
 
-      // ==================================================
-      // 3. GET ALL MAIN DSA DOCUMENTS
-      // ==================================================
+    // ==================================================
+    // 3. GET ALL MAIN DSA DOCUMENTS
+    // ==================================================
 
-      const documentSql = `
+    const documentSql = `
         SELECT
           id,
           dsa_id,
@@ -4009,33 +3796,25 @@ router.get(
         ORDER BY id ASC
       `;
 
-      const documents = await query(
-        documentSql,
-        dsaIds,
-      );
+    const documents = await query(documentSql, dsaIds);
 
-      // ==================================================
-      // 3.1 GET ALL VERIFIED PARTNERS
-      // ONLY PARTNERSHIP / LLP
-      // ==================================================
+    // ==================================================
+    // 3.1 GET ALL VERIFIED PARTNERS
+    // ONLY PARTNERSHIP / LLP
+    // ==================================================
 
-      let partnerDetails = [];
+    let partnerDetails = [];
 
-      const partnershipDsaIds = dsaUsers
-        .filter(
-          (dsa) =>
-            dsa.constitution_type ===
-            "Partnership/LLP",
-        )
-        .map((dsa) => dsa.id);
+    const partnershipDsaIds = dsaUsers
+      .filter((dsa) => dsa.constitution_type === "Partnership/LLP")
+      .map((dsa) => dsa.id);
 
-      if (partnershipDsaIds.length > 0) {
-        const partnershipPlaceholders =
-          partnershipDsaIds
-            .map(() => "?")
-            .join(",");
+    if (partnershipDsaIds.length > 0) {
+      const partnershipPlaceholders = partnershipDsaIds
+        .map(() => "?")
+        .join(",");
 
-        const partnerSql = `
+      const partnerSql = `
           SELECT
             id,
             dsa_id,
@@ -4054,29 +3833,21 @@ router.get(
           ORDER BY dsa_id ASC, partner_number ASC
         `;
 
-        partnerDetails = await query(
-          partnerSql,
-          partnershipDsaIds,
-        );
-      }
+      partnerDetails = await query(partnerSql, partnershipDsaIds);
+    }
 
-      // ==================================================
-      // 3.2 GET ALL PARTNER DOCUMENTS
-      // ==================================================
+    // ==================================================
+    // 3.2 GET ALL PARTNER DOCUMENTS
+    // ==================================================
 
-      let partnerDocuments = [];
+    let partnerDocuments = [];
 
-      const partnerIds = partnerDetails.map(
-        (partner) => partner.id,
-      );
+    const partnerIds = partnerDetails.map((partner) => partner.id);
 
-      if (partnerIds.length > 0) {
-        const partnerPlaceholders =
-          partnerIds
-            .map(() => "?")
-            .join(",");
+    if (partnerIds.length > 0) {
+      const partnerPlaceholders = partnerIds.map(() => "?").join(",");
 
-        const partnerDocumentSql = `
+      const partnerDocumentSql = `
           SELECT
             id,
             partner_id,
@@ -4100,34 +3871,24 @@ router.get(
           ORDER BY id ASC
         `;
 
-        partnerDocuments = await query(
-          partnerDocumentSql,
-          partnerIds,
-        );
-      }
+      partnerDocuments = await query(partnerDocumentSql, partnerIds);
+    }
 
-      // ==================================================
-      // 3.3 GET ALL VERIFIED DIRECTORS
-      // ONLY PRIVATE LIMITED
-      // ==================================================
+    // ==================================================
+    // 3.3 GET ALL VERIFIED DIRECTORS
+    // ONLY PRIVATE LIMITED
+    // ==================================================
 
-      let directorDetails = [];
+    let directorDetails = [];
 
-      const privateDsaIds = dsaUsers
-        .filter(
-          (dsa) =>
-            dsa.constitution_type ===
-            "Private Limited",
-        )
-        .map((dsa) => dsa.id);
+    const privateDsaIds = dsaUsers
+      .filter((dsa) => dsa.constitution_type === "Private Limited")
+      .map((dsa) => dsa.id);
 
-      if (privateDsaIds.length > 0) {
-        const directorPlaceholders =
-          privateDsaIds
-            .map(() => "?")
-            .join(",");
+    if (privateDsaIds.length > 0) {
+      const directorPlaceholders = privateDsaIds.map(() => "?").join(",");
 
-        const directorSql = `
+      const directorSql = `
           SELECT
             id,
             dsa_id,
@@ -4146,33 +3907,25 @@ router.get(
           ORDER BY dsa_id ASC, director_number ASC
         `;
 
-        directorDetails = await query(
-          directorSql,
-          privateDsaIds,
-        );
-      }
+      directorDetails = await query(directorSql, privateDsaIds);
+    }
 
-      // ==================================================
-      // 3.4 GET ALL DIRECTOR DOCUMENTS
-      //
-      // PAN
-      // AADHAAR
-      // PASSPORT
-      // ==================================================
+    // ==================================================
+    // 3.4 GET ALL DIRECTOR DOCUMENTS
+    //
+    // PAN
+    // AADHAAR
+    // PASSPORT
+    // ==================================================
 
-      let directorDocuments = [];
+    let directorDocuments = [];
 
-      const directorIds = directorDetails.map(
-        (director) => director.id,
-      );
+    const directorIds = directorDetails.map((director) => director.id);
 
-      if (directorIds.length > 0) {
-        const directorPlaceholders =
-          directorIds
-            .map(() => "?")
-            .join(",");
+    if (directorIds.length > 0) {
+      const directorPlaceholders = directorIds.map(() => "?").join(",");
 
-        const directorDocumentSql = `
+      const directorDocumentSql = `
           SELECT
             id,
             director_id,
@@ -4196,166 +3949,131 @@ router.get(
           ORDER BY id ASC
         `;
 
-        directorDocuments = await query(
-          directorDocumentSql,
-          directorIds,
-        );
-      }
-
-      // ==================================================
-      // 4. MAP MAIN DSA DOCUMENTS
-      // ==================================================
-
-      const documentsMap = {};
-
-      for (const document of documents) {
-        if (!documentsMap[document.dsa_id]) {
-          documentsMap[document.dsa_id] = [];
-        }
-
-        documentsMap[document.dsa_id].push(
-          document,
-        );
-      }
-
-      // ==================================================
-      // 4.1 MAP PARTNER DOCUMENTS
-      // ==================================================
-
-      const partnerDocumentMap = {};
-
-      for (const document of partnerDocuments) {
-        if (
-          !partnerDocumentMap[
-            document.partner_id
-          ]
-        ) {
-          partnerDocumentMap[
-            document.partner_id
-          ] = [];
-        }
-
-        partnerDocumentMap[
-          document.partner_id
-        ].push(document);
-      }
-
-      // ==================================================
-      // 4.2 MAP PARTNERS WITH DSA
-      // ==================================================
-
-      const partnersMap = {};
-
-      for (const partner of partnerDetails) {
-        // Add partner documents
-        partner.documents =
-          partnerDocumentMap[partner.id] || [];
-
-        if (!partnersMap[partner.dsa_id]) {
-          partnersMap[partner.dsa_id] = [];
-        }
-
-        partnersMap[partner.dsa_id].push(
-          partner,
-        );
-      }
-
-      // ==================================================
-      // 4.3 MAP DIRECTOR DOCUMENTS
-      // ==================================================
-
-      const directorDocumentMap = {};
-
-      for (const document of directorDocuments) {
-        if (
-          !directorDocumentMap[
-            document.director_id
-          ]
-        ) {
-          directorDocumentMap[
-            document.director_id
-          ] = [];
-        }
-
-        directorDocumentMap[
-          document.director_id
-        ].push(document);
-      }
-
-      // ==================================================
-      // 4.4 MAP DIRECTORS WITH DSA
-      // ==================================================
-
-      const directorsMap = {};
-
-      for (const director of directorDetails) {
-        // Add director documents
-        director.documents =
-          directorDocumentMap[director.id] || [];
-
-        if (!directorsMap[director.dsa_id]) {
-          directorsMap[director.dsa_id] = [];
-        }
-
-        directorsMap[director.dsa_id].push(
-          director,
-        );
-      }
-
-      // ==================================================
-      // 5. FINAL DATA
-      // ==================================================
-
-      const finalData = dsaUsers.map((dsa) => ({
-        ...dsa,
-
-        // ----------------------------------------------
-        // MAIN DSA DOCUMENTS
-        // ----------------------------------------------
-
-        documents:
-          documentsMap[dsa.id] || [],
-
-        // ----------------------------------------------
-        // PARTNERS
-        // Partnership/LLP only
-        // ----------------------------------------------
-
-        partners:
-          partnersMap[dsa.id] || [],
-
-        // ----------------------------------------------
-        // DIRECTORS
-        // Private Limited only
-        // ----------------------------------------------
-
-        directors:
-          directorsMap[dsa.id] || [],
-      }));
-
-      // ==================================================
-      // 6. SUCCESS RESPONSE
-      // ==================================================
-
-      return res.status(200).json({
-        status: true,
-        count: finalData.length,
-        data: finalData,
-      });
-
-    } catch (error) {
-      console.error(
-        "GET ALL DSA USERS ERROR:",
-        error,
-      );
-
-      return res.status(500).json({
-        status: false,
-        message: "Failed to fetch DSA users",
-        error: error.message,
-      });
+      directorDocuments = await query(directorDocumentSql, directorIds);
     }
-  },
-);
+
+    // ==================================================
+    // 4. MAP MAIN DSA DOCUMENTS
+    // ==================================================
+
+    const documentsMap = {};
+
+    for (const document of documents) {
+      if (!documentsMap[document.dsa_id]) {
+        documentsMap[document.dsa_id] = [];
+      }
+
+      documentsMap[document.dsa_id].push(document);
+    }
+
+    // ==================================================
+    // 4.1 MAP PARTNER DOCUMENTS
+    // ==================================================
+
+    const partnerDocumentMap = {};
+
+    for (const document of partnerDocuments) {
+      if (!partnerDocumentMap[document.partner_id]) {
+        partnerDocumentMap[document.partner_id] = [];
+      }
+
+      partnerDocumentMap[document.partner_id].push(document);
+    }
+
+    // ==================================================
+    // 4.2 MAP PARTNERS WITH DSA
+    // ==================================================
+
+    const partnersMap = {};
+
+    for (const partner of partnerDetails) {
+      // Add partner documents
+      partner.documents = partnerDocumentMap[partner.id] || [];
+
+      if (!partnersMap[partner.dsa_id]) {
+        partnersMap[partner.dsa_id] = [];
+      }
+
+      partnersMap[partner.dsa_id].push(partner);
+    }
+
+    // ==================================================
+    // 4.3 MAP DIRECTOR DOCUMENTS
+    // ==================================================
+
+    const directorDocumentMap = {};
+
+    for (const document of directorDocuments) {
+      if (!directorDocumentMap[document.director_id]) {
+        directorDocumentMap[document.director_id] = [];
+      }
+
+      directorDocumentMap[document.director_id].push(document);
+    }
+
+    // ==================================================
+    // 4.4 MAP DIRECTORS WITH DSA
+    // ==================================================
+
+    const directorsMap = {};
+
+    for (const director of directorDetails) {
+      // Add director documents
+      director.documents = directorDocumentMap[director.id] || [];
+
+      if (!directorsMap[director.dsa_id]) {
+        directorsMap[director.dsa_id] = [];
+      }
+
+      directorsMap[director.dsa_id].push(director);
+    }
+
+    // ==================================================
+    // 5. FINAL DATA
+    // ==================================================
+
+    const finalData = dsaUsers.map((dsa) => ({
+      ...dsa,
+
+      // ----------------------------------------------
+      // MAIN DSA DOCUMENTS
+      // ----------------------------------------------
+
+      documents: documentsMap[dsa.id] || [],
+
+      // ----------------------------------------------
+      // PARTNERS
+      // Partnership/LLP only
+      // ----------------------------------------------
+
+      partners: partnersMap[dsa.id] || [],
+
+      // ----------------------------------------------
+      // DIRECTORS
+      // Private Limited only
+      // ----------------------------------------------
+
+      directors: directorsMap[dsa.id] || [],
+    }));
+
+    // ==================================================
+    // 6. SUCCESS RESPONSE
+    // ==================================================
+
+    return res.status(200).json({
+      status: true,
+      count: finalData.length,
+      data: finalData,
+    });
+  } catch (error) {
+    console.error("GET ALL DSA USERS ERROR:", error);
+
+    return res.status(500).json({
+      status: false,
+      message: "Failed to fetch DSA users",
+      error: error.message,
+    });
+  }
+});
 
 module.exports = router;
