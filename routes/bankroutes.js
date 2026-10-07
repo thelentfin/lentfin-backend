@@ -83,6 +83,33 @@ router.post("/add", authenticateAndAuthorize(), async (req, res) => {
       `,
       [result.insertId],
     );
+
+    // ==================================================
+    // AUTO-LINK ACTIVE PRODUCTS TO NEW BANK
+    // ==================================================
+    try {
+      const [activeProducts] = await db.promise().query(
+        "SELECT id FROM products WHERE status = 'Active'"
+      );
+      if (activeProducts.length > 0) {
+        const optionRows = activeProducts.map((p) => [
+          result.insertId,
+          p.id,
+          "Standard",
+          0.00,
+          "Inactive",
+          "Default slab",
+        ]);
+        await db.promise().query(
+          `INSERT IGNORE INTO bank_product_payout_options 
+           (bank_id, product_id, option_label, payout_percentage, status, remarks) 
+           VALUES ?`,
+          [optionRows]
+        );
+      }
+    } catch (optErr) {
+      console.warn("Auto-linking products to new bank warning:", optErr.message);
+    }
     // ==================================================
     // SOCKET.IO EVENT
     // ==================================================
