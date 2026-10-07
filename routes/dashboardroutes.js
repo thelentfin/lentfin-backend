@@ -219,6 +219,12 @@ router.get("/admin", requireAuth, async (req, res) => {
           lc.loan_account_number,
 
           lc.sanction_amount,
+          lc.product_id,
+          prod.product_name,
+          lc.payout_option_id,
+          bpo.option_label,
+          lc.payout_percentage,
+          lc.calculated_commission,
 
           lc.status,
           lc.reviewed_by,
@@ -263,6 +269,12 @@ router.get("/admin", requireAuth, async (req, res) => {
 
         LEFT JOIN banks b
           ON lc.bank_id=b.id
+
+        LEFT JOIN products prod
+          ON lc.product_id=prod.id
+
+        LEFT JOIN bank_product_payout_options bpo
+          ON lc.payout_option_id=bpo.id
 
         LEFT JOIN loan_case_disbursements ld
           ON lc.id=ld.case_id

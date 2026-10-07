@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db");
 const jwt = require("jsonwebtoken");
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 const {
   checkLoginCooldown,
   recordFailedLogin,
@@ -39,30 +39,69 @@ const verifyToken = (req, res, next) => {
     next();
   });
 };
-
 // ======================================================
 // LOGIN
 // ======================================================
 
 router.post("/login", checkLoginCooldown, async (req, res) => {
-  const { email, password } = req.body;
+  try {
+    // ==================================================
+    // 1. GET LOGIN DATA
+    // ==================================================
 
-  const adminQuery = "SELECT * FROM users WHERE email = ?";
+    const email = String(req.body.email || "")
+      .trim()
+      .toLowerCase();
 
-  db.query(adminQuery, [email], async (err, adminResult) => {
-    if (err) {
-      return res.status(500).json({
+    const password = String(req.body.password || "");
+
+    // ==================================================
+    // 2. BASIC VALIDATION
+    // ==================================================
+
+    if (!email || !password) {
+      return res.status(400).json({
         status: false,
-        message: "Database Error",
+        message: "Email and password are required",
       });
     }
 
-    // ================= ADMIN LOGIN =================
+    // ==================================================
+    // 3. CHECK ADMIN / CORPORATE USER
+    // ==================================================
+
+    const adminQuery = `
+      SELECT *
+      FROM users
+      WHERE LOWER(TRIM(email)) = ?
+      LIMIT 1
+    `;
+
+    const adminResult = await new Promise((resolve, reject) => {
+      db.query(
+        adminQuery,
+        [email],
+        (err, result) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(result);
+          }
+        },
+      );
+    });
+
+    // ==================================================
+    // ADMIN LOGIN
+    // ==================================================
 
     if (adminResult.length > 0) {
       const admin = adminResult[0];
 
-      // Account Status Check
+      // ----------------------------------------------
+      // CHECK STATUS
+      // ----------------------------------------------
+
       if (admin.status === "Inactive") {
         return res.status(403).json({
           status: false,
@@ -70,95 +109,141 @@ router.post("/login", checkLoginCooldown, async (req, res) => {
         });
       }
 
+      // ----------------------------------------------
+      // PASSWORD CHECK
+      // ----------------------------------------------
+
       let passwordMatch = false;
 
-      // Support bcrypt + old plain text passwords
-      if (admin.password.startsWith("$2")) {
-        passwordMatch = await bcrypt.compare(password, admin.password);
+      if (
+        admin.password &&
+        (
+          admin.password.startsWith("$2a$") ||
+          admin.password.startsWith("$2b$") ||
+          admin.password.startsWith("$2y$")
+        )
+      ) {
+        passwordMatch = await bcrypt.compare(
+          password,
+          admin.password,
+        );
       } else {
-        passwordMatch = String(admin.password) === String(password);
+        // Backward compatibility for old plain-text users
+        passwordMatch =
+          String(admin.password) === String(password);
       }
 
-      if (passwordMatch) {
-        clearFailedLogin(req);
+      // ----------------------------------------------
+      // INVALID ADMIN PASSWORD
+      // ----------------------------------------------
 
-        const token = jwt.sign(
-          {
-            id: admin.id,
-            role: admin.role,
-            username: (admin.name || "").split(" ")[0],
-          },
-          JWT_SECRET,
-          {
-            expiresIn: "5h",
-          },
-        );
+      if (!passwordMatch) {
+        recordFailedLogin(req);
 
-        return res.status(200).json({
-          status: true,
-          id: admin.id,
-          name: admin.name,
-          username: (admin.name || "").split(" ")[0],
-          email: admin.email,
-          role: admin.role,
-          token,
-          message: "Admin Login Success",
+        return res.status(401).json({
+          status: false,
+          message: "Invalid Credentials",
         });
       }
+
+      // ----------------------------------------------
+      // LOGIN SUCCESS
+      // ----------------------------------------------
+
+      clearFailedLogin(req);
+
+      const token = jwt.sign(
+        {
+          id: admin.id,
+          role: admin.role,
+          username: (admin.name || "")
+            .split(" ")[0],
+        },
+        JWT_SECRET,
+        {
+          expiresIn: "5h",
+        },
+      );
+
+      return res.status(200).json({
+        status: true,
+        id: admin.id,
+        name: admin.name,
+        username: (admin.name || "")
+          .split(" ")[0],
+        email: admin.email,
+        role: admin.role,
+        token,
+        message: "Admin Login Success",
+      });
     }
 
-    // ================= DSA LOGIN =================
+    // ==================================================
+    // 4. CHECK DSA USER
+    // ==================================================
 
-    const dsaQuery = "SELECT * FROM dsa_users WHERE email = ?";
+    const dsaQuery = `
+      SELECT *
+      FROM dsa_users
+      WHERE LOWER(TRIM(email)) = ?
+      LIMIT 1
+    `;
 
-    db.query(dsaQuery, [email], async (err, dsaResult) => {
-      if (err) {
-        return res.status(500).json({
-          status: false,
-          message: "Database Error",
-        });
-      }
+    const dsaResult = await new Promise((resolve, reject) => {
+      db.query(
+        dsaQuery,
+        [email],
+        (err, result) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(result);
+          }
+        },
+      );
+    });
 
-      if (dsaResult.length > 0) {
-        const dsa = dsaResult[0];
+    // ==================================================
+    // DSA NOT FOUND
+    // ==================================================
 
-        // DSA Status Check (only if status column exists)
-        if (dsa.status && dsa.status === "Inactive") {
-          return res.status(403).json({
-            status: false,
-            message: "Your account is inactive.",
-          });
-        }
+    if (dsaResult.length === 0) {
+      recordFailedLogin(req);
 
-        const passwordMatch = await bcrypt.compare(password, dsa.password);
+      return res.status(401).json({
+        status: false,
+        message: "Invalid Credentials",
+      });
+    }
 
-        if (passwordMatch) {
-          clearFailedLogin(req);
+    const dsa = dsaResult[0];
 
-          const token = jwt.sign(
-            {
-              id: dsa.id,
-              role: dsa.role,
-              username: (dsa.name || "").split(" ")[0],
-            },
-            JWT_SECRET,
-            {
-              expiresIn: "5h",
-            },
-          );
+    // ==================================================
+    // 5. CHECK DSA STATUS
+    // ==================================================
 
-          return res.status(200).json({
-            status: true,
-            id: dsa.id,
-            username: (dsa.name || "").split(" ")[0],
-            role: dsa.role,
-            token,
-            message: "DSA Login Success",
-          });
-        }
-      }
+    if (
+      dsa.status &&
+      String(dsa.status).toLowerCase() === "inactive"
+    ) {
+      return res.status(403).json({
+        status: false,
+        message: "Your account is inactive.",
+      });
+    }
 
-      // Invalid Credentials
+    // ==================================================
+    // 6. CHECK PASSWORD HASH EXISTS
+    // ==================================================
+
+    if (!dsa.password) {
+      console.error(
+        "DSA PASSWORD HASH IS EMPTY",
+        {
+          dsa_id: dsa.id,
+          email: dsa.email,
+        },
+      );
 
       recordFailedLogin(req);
 
@@ -166,8 +251,118 @@ router.post("/login", checkLoginCooldown, async (req, res) => {
         status: false,
         message: "Invalid Credentials",
       });
+    }
+
+    // ==================================================
+    // 7. CHECK BCRYPT HASH FORMAT
+    // ==================================================
+
+    const isBcryptHash =
+      dsa.password.startsWith("$2a$") ||
+      dsa.password.startsWith("$2b$") ||
+      dsa.password.startsWith("$2y$");
+
+    if (!isBcryptHash) {
+      console.error(
+        "DSA PASSWORD IS NOT A VALID BCRYPT HASH",
+        {
+          dsa_id: dsa.id,
+          email: dsa.email,
+          hashLength: dsa.password.length,
+          hashPrefix: dsa.password.substring(0, 4),
+        },
+      );
+
+      recordFailedLogin(req);
+
+      return res.status(401).json({
+        status: false,
+        message: "Invalid Credentials",
+      });
+    }
+
+    // ==================================================
+    // 8. COMPARE PASSWORD
+    // ==================================================
+
+    const passwordMatch = await bcrypt.compare(
+      password,
+      dsa.password,
+    );
+
+    console.log("DSA LOGIN DEBUG:", {
+      dsa_id: dsa.id,
+      email: dsa.email,
+      hashLength: dsa.password.length,
+      passwordMatch,
     });
-  });
+
+    // ==================================================
+    // INVALID PASSWORD
+    // ==================================================
+
+    if (!passwordMatch) {
+      recordFailedLogin(req);
+
+      return res.status(401).json({
+        status: false,
+        message: "Invalid Credentials",
+      });
+    }
+
+    // ==================================================
+    // 9. PASSWORD CORRECT
+    // ==================================================
+
+    clearFailedLogin(req);
+
+    // ==================================================
+    // 10. CREATE JWT
+    // ==================================================
+
+    const token = jwt.sign(
+      {
+        id: dsa.id,
+        role: dsa.role,
+        username: (dsa.name || "")
+          .split(" ")[0],
+      },
+      JWT_SECRET,
+      {
+        expiresIn: "5h",
+      },
+    );
+
+    // ==================================================
+    // 11. LOGIN SUCCESS
+    // ==================================================
+
+    return res.status(200).json({
+      status: true,
+      id: dsa.id,
+      name: dsa.name,
+      username: (dsa.name || "")
+        .split(" ")[0],
+      email: dsa.email,
+      role: dsa.role,
+      token,
+      must_change_password:
+        Number(dsa.must_change_password) === 1,
+      message: "DSA Login Success",
+    });
+
+  } catch (error) {
+    console.error(
+      "LOGIN ERROR:",
+      error,
+    );
+
+    return res.status(500).json({
+      status: false,
+      message: "Database Error",
+      error: error.message,
+    });
+  }
 });
 
 // ======================================================

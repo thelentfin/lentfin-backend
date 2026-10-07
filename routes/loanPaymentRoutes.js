@@ -168,6 +168,7 @@ router.post(
           dsa_id,
           customer_name,
           sanction_amount,
+          payout_percentage,
           status
         FROM loan_cases
         WHERE id = ?
@@ -254,26 +255,47 @@ router.post(
       }
 
       // ==================================================
-      // STEP 10 - GET LOAN AMOUNT
+      // STEP 10 - GET DISBURSED LOAN AMOUNT
       // ==================================================
 
-      const loanAmount = Number(loanCase.sanction_amount);
+      const isPartDisbursement =
+        String(phase4Result[0]?.disbursement_type || "").toUpperCase() === "PART";
+      const disbursedAmount =
+        isPartDisbursement && Number(phase4Result[0]?.disbursement_amount) > 0
+          ? Number(phase4Result[0].disbursement_amount)
+          : Number(loanCase.sanction_amount);
 
-      if (!Number.isFinite(loanAmount) || loanAmount <= 0) {
+      if (!Number.isFinite(disbursedAmount) || disbursedAmount <= 0) {
         return res.status(400).json({
           status: false,
-          message: "Invalid sanction amount for this loan case",
+          message: "Invalid loan amount for this case",
         });
       }
 
       // ==================================================
-      // STEP 11 - CALCULATE PAYMENT
+      // STEP 11 - CALCULATE PAYMENT & CORPORATE INFLOW
       // ==================================================
 
       const paymentAmount = calculatePaymentAmount(
-        loanAmount,
+        disbursedAmount,
         paymentPercentage,
       );
+
+      // Auto-populate Corporate Inflow Rate & Revenue from the selected partner slab
+      const corporateRate =
+        loanCase.payout_percentage !== null && loanCase.payout_percentage !== undefined
+          ? Number(loanCase.payout_percentage)
+          : null;
+
+      const corporateAmount =
+        corporateRate !== null
+          ? Math.round(((disbursedAmount * corporateRate) / 100) * 100) / 100
+          : null;
+
+      const adminProfit =
+        corporateAmount !== null
+          ? Math.round((corporateAmount - paymentAmount) * 100) / 100
+          : null;
 
       // ==================================================
       // STEP 12 - INSERT PHASE 6
@@ -286,16 +308,24 @@ router.post(
           payment_option,
           payment_percentage,
           loan_amount,
-          payment_amount
+          payment_amount,
+          corporate_rate,
+          corporate_amount,
+          admin_profit,
+          corporate_received_amount,
+          corporate_payment_status
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.00, 'PENDING')
         `,
         [
           validatedCaseId,
           validatedPaymentOption,
           paymentPercentage,
-          loanAmount,
+          disbursedAmount,
           paymentAmount,
+          corporateRate,
+          corporateAmount,
+          adminProfit,
         ],
       );
 
@@ -689,6 +719,7 @@ router.get(
           lcp.payment_amount,
           lcp.corporate_rate,
           lcp.corporate_amount,
+          lcp.corporate_received_amount,
           lcp.admin_profit,
           lcp.corporate_payment_status,
           lcp.corporate_received_at,
@@ -702,6 +733,7 @@ router.get(
           lc.case_number,
           lc.customer_name,
           lc.sanction_amount,
+          lc.payout_percentage AS slab_percentage,
           lc.status AS case_status,
           lc.dsa_id,
           lc.company_id,
@@ -771,6 +803,7 @@ router.get(
             payment_amount: row.payment_amount,
             corporate_rate: row.corporate_rate,
             corporate_amount: row.corporate_amount,
+            corporate_received_amount: row.corporate_received_amount,
             admin_profit: row.admin_profit,
             corporate_payment_status: row.corporate_payment_status,
             corporate_received_at: row.corporate_received_at,
@@ -993,5 +1026,148 @@ router.put(
 // ======================================================
 // EXPORT
 // ======================================================
+
+// =========================================================================
+// 8. RECORD CORPORATE INFLOW TRANCHE & UPDATE RECOVERY
+// POST /api/loan-payment/record-corporate-inflow
+// =========================================================================
+router.post(
+  "/record-corporate-inflow",
+  authenticateAndAuthorize("admin"),
+  async (req, res) => {
+    try {
+      const {
+        case_id,
+        received_amount,
+        corporate_received_at,
+        corporate_rate,
+        mode = "add", // "add" to add tranche, "set_total" to set total received
+      } = req.body;
+
+      if (!case_id) {
+        return res.status(400).json({ status: false, message: "case_id is required" });
+      }
+
+      let paymentRows = await query(
+        "SELECT * FROM loan_case_payments WHERE case_id = ? LIMIT 1",
+        [case_id]
+      );
+
+      // If payment record does not exist yet, find loan case and auto-create
+      if (paymentRows.length === 0) {
+        const caseRows = await query(
+          "SELECT * FROM loan_cases WHERE id = ? LIMIT 1",
+          [case_id]
+        );
+        if (caseRows.length === 0) {
+          return res.status(404).json({ status: false, message: "Loan case not found" });
+        }
+        const lc = caseRows[0];
+        const disbRows = await query(
+          "SELECT disbursement_amount FROM loan_case_disbursements WHERE case_id = ? LIMIT 1",
+          [case_id]
+        );
+        const disbAmt = disbRows.length > 0 && Number(disbRows[0].disbursement_amount) > 0
+          ? Number(disbRows[0].disbursement_amount)
+          : Number(lc.sanction_amount || 0);
+
+        const dsaRate = 0.90;
+        const dsaPayout = Math.round(((disbAmt * dsaRate) / 100) * 100) / 100;
+        const rate = corporate_rate !== undefined && corporate_rate !== null
+          ? Number(corporate_rate)
+          : (lc.payout_percentage ? Number(lc.payout_percentage) : null);
+        const corpAmt = rate !== null ? Math.round(((disbAmt * rate) / 100) * 100) / 100 : null;
+        const netRev = corpAmt !== null ? Math.round((corpAmt - dsaPayout) * 100) / 100 : null;
+
+        await query(
+          `INSERT INTO loan_case_payments (
+            case_id, payment_option, payment_percentage, loan_amount, payment_amount,
+            corporate_rate, corporate_amount, admin_profit, corporate_received_amount, corporate_payment_status
+          ) VALUES (?, 'STANDARD 5 DAYS', ?, ?, ?, ?, ?, ?, 0.00, 'PENDING')`,
+          [case_id, dsaRate, disbAmt, dsaPayout, rate, corpAmt, netRev]
+        );
+
+        paymentRows = await query(
+          "SELECT * FROM loan_case_payments WHERE case_id = ? LIMIT 1",
+          [case_id]
+        );
+      }
+
+      const p = paymentRows[0];
+      const incomingAmount = parseFloat(received_amount);
+      if (isNaN(incomingAmount) || incomingAmount < 0) {
+        return res.status(400).json({ status: false, message: "Valid received amount is required" });
+      }
+
+      // Check if corporate rate was updated
+      let effectiveRate = p.corporate_rate !== null ? Number(p.corporate_rate) : null;
+      if (corporate_rate !== undefined && corporate_rate !== null && !isNaN(Number(corporate_rate))) {
+        effectiveRate = Number(corporate_rate);
+      } else if (effectiveRate === null) {
+        // Fallback to loan case payout_percentage
+        const lcRows = await query("SELECT payout_percentage FROM loan_cases WHERE id = ? LIMIT 1", [case_id]);
+        if (lcRows.length > 0 && lcRows[0].payout_percentage !== null) {
+          effectiveRate = Number(lcRows[0].payout_percentage);
+        }
+      }
+
+      let expectedTotal = p.corporate_amount !== null ? Number(p.corporate_amount) : 0;
+      let adminProfit = p.admin_profit !== null ? Number(p.admin_profit) : 0;
+      const loanAmount = Number(p.loan_amount || 0);
+      const dsaPayout = Number(p.payment_amount || 0);
+
+      if (effectiveRate !== null && loanAmount > 0 && (expectedTotal <= 0 || corporate_rate !== undefined)) {
+        expectedTotal = Math.round(((loanAmount * effectiveRate) / 100) * 100) / 100;
+        adminProfit = Math.round((expectedTotal - dsaPayout) * 100) / 100;
+      }
+
+      const currentReceived = parseFloat(p.corporate_received_amount || 0);
+      const newTotalReceived = mode === "set_total"
+        ? Math.round(incomingAmount * 100) / 100
+        : Math.round((currentReceived + incomingAmount) * 100) / 100;
+
+      let newStatus = "PENDING";
+      if (newTotalReceived >= expectedTotal && expectedTotal > 0) {
+        newStatus = "RECEIVED";
+      } else if (newTotalReceived > 0) {
+        newStatus = "PARTIAL";
+      }
+
+      const receivedDate = corporate_received_at || new Date().toISOString().slice(0, 10);
+
+      await query(
+        `UPDATE loan_case_payments
+         SET corporate_rate = ?,
+             corporate_amount = ?,
+             admin_profit = ?,
+             corporate_received_amount = ?,
+             corporate_payment_status = ?,
+             corporate_received_at = ?,
+             updated_at = NOW()
+         WHERE case_id = ?`,
+        [effectiveRate, expectedTotal, adminProfit, newTotalReceived, newStatus, receivedDate, case_id]
+      );
+
+      const recoveryBalance = Math.max(0, Math.round((expectedTotal - newTotalReceived) * 100) / 100);
+
+      return res.status(200).json({
+        status: true,
+        message: "Corporate inflow recorded successfully.",
+        data: {
+          corporate_rate: effectiveRate,
+          corporate_amount: expectedTotal,
+          corporate_received_amount: newTotalReceived,
+          recovery_balance: recoveryBalance,
+          corporate_payment_status: newStatus,
+          corporate_received_at: receivedDate,
+          admin_profit: adminProfit,
+        },
+      });
+    } catch (err) {
+      console.error("RECORD CORPORATE INFLOW ERROR:", err);
+      return res.status(500).json({ status: false, message: err.message });
+    }
+  }
+);
 
 module.exports = router;

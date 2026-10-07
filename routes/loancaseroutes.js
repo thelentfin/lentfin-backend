@@ -179,6 +179,8 @@ router.post(
         loan_account_number,
         sanction_amount,
         remarks,
+        product_id,
+        payout_option_id,
       } = req.body;
 
       // ==================================================
@@ -449,6 +451,28 @@ router.post(
       )}`;
 
       // ==================================================
+      // STEP 14b - RESOLVE SLAB RATE FROM PAYOUT OPTION
+      // ==================================================
+
+      let parsedProductId = product_id && !isNaN(Number(product_id)) ? Number(product_id) : null;
+      let parsedOptionId = payout_option_id && !isNaN(Number(payout_option_id)) ? Number(payout_option_id) : null;
+      let slabPercentage = null;
+
+      if (parsedOptionId) {
+        try {
+          const optRows = await query(
+            "SELECT payout_percentage FROM bank_product_payout_options WHERE id = ? LIMIT 1",
+            [parsedOptionId]
+          );
+          if (optRows && optRows.length > 0) {
+            slabPercentage = Number(optRows[0].payout_percentage);
+          }
+        } catch (e) {
+          console.error("Failed to resolve payout option:", e);
+        }
+      }
+
+      // ==================================================
       // STEP 15
       // INSERT LOAN CASE
       // ==================================================
@@ -460,6 +484,9 @@ router.post(
     dsa_id,
     company_id,
     bank_id,
+    product_id,
+    payout_option_id,
+    payout_percentage,
     customer_name,
     mobile_number,
     application_number,
@@ -468,13 +495,16 @@ router.post(
     status,
     remarks
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           temporaryCaseNumber,
           dsaId,
           companyId,
           validatedBankId,
+          parsedProductId,
+          parsedOptionId,
+          slabPercentage,
           validatedCustomerName,
           validatedMobileNumber,
           validatedApplicationNumber ? validatedApplicationNumber : null,
@@ -1010,6 +1040,12 @@ lc.mobile_number,
 lc.application_number,
 lc.loan_account_number,
 lc.sanction_amount,
+lc.product_id,
+prod.product_name,
+lc.payout_option_id,
+bpo.option_label,
+lc.payout_percentage,
+lc.calculated_commission,
 
 lc.status,
 lc.reviewed_by,
@@ -1070,6 +1106,16 @@ ON lc.company_id = c.id
 
         INNER JOIN banks b
           ON lc.bank_id = b.id
+
+        /* ============================================
+           PRODUCT & OPTION
+           ============================================ */
+
+        LEFT JOIN products prod
+          ON lc.product_id = prod.id
+
+        LEFT JOIN bank_product_payout_options bpo
+          ON lc.payout_option_id = bpo.id
 
 
         /* ============================================
@@ -1149,6 +1195,12 @@ ON lc.company_id = c.id
             application_number: row.application_number,
             loan_account_number: row.loan_account_number,
             sanction_amount: row.sanction_amount,
+            product_id: row.product_id || null,
+            product_name: row.product_name || null,
+            payout_option_id: row.payout_option_id || null,
+            option_label: row.option_label || null,
+            payout_percentage: row.payout_percentage !== null ? Number(row.payout_percentage) : null,
+            calculated_commission: row.calculated_commission !== null ? Number(row.calculated_commission) : null,
 
             status: row.status,
             reviewed_by: row.reviewed_by,
