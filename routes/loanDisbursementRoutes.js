@@ -357,10 +357,10 @@ router.post(
       }
 
       // ==================================================
-      // STEP 14 - PDD LOGIC
+      // STEP 14 - PDD LOGIC (Upload is optional)
       // ==================================================
 
-      if (validatedPddCleared === "YES") {
+      if (req.file) {
         const pddValidation = validatePddDocument(req.file);
 
         if (!pddValidation.success) {
@@ -369,17 +369,6 @@ router.post(
             message: pddValidation.message,
           });
         }
-      }
-
-      // ==================================================
-      // STEP 15 - PDD MUST NOT EXIST WHEN NO
-      // ==================================================
-
-      if (validatedPddCleared === "NO" && req.file) {
-        return res.status(400).json({
-          status: false,
-          message: "PDD document must not be uploaded when PDD is NO",
-        });
       }
 
       // ==================================================
@@ -575,10 +564,7 @@ router.post(
       return res.status(201).json({
         status: true,
 
-        message:
-          validatedPddCleared === "YES"
-            ? "Phase 4 disbursement details and PDD document created successfully"
-            : "Phase 4 disbursement details created successfully",
+        message: "Phase 4 disbursement details created successfully",
 
         data: {
           disbursement:
@@ -953,7 +939,26 @@ router.get(
           lc.sanction_amount,
           lc.status AS case_status,
           lc.dsa_id,
+          lc.product_id,
+          prod.product_name,
+          lc.payout_option_id,
+          bpo.option_label,
+          lc.payout_percentage,
+          lc.calculated_commission,
           b.bank_name,
+
+
+          /* ============================================
+             PAYMENT / SETTLEMENT & CORPORATE INFLOW
+             ============================================ */
+          lcp.id AS payment_id,
+          lcp.payment_amount,
+          lcp.corporate_rate,
+          lcp.corporate_amount,
+          lcp.corporate_received_amount,
+          lcp.admin_profit,
+          lcp.corporate_payment_status,
+          lcp.corporate_received_at,
 
 
           /* ============================================
@@ -1002,12 +1007,26 @@ router.get(
           ON lc.bank_id = b.id
 
         /* ============================================
+           PRODUCT & OPTION
+           ============================================ */
+        LEFT JOIN products prod
+          ON lc.product_id = prod.id
+
+        LEFT JOIN bank_product_payout_options bpo
+          ON lc.payout_option_id = bpo.id
+
+        /* ============================================
            DSA
            ============================================ */
 
         INNER JOIN dsa_users dsa
           ON lc.dsa_id = dsa.id
 
+        /* ============================================
+           PAYMENT / SETTLEMENT
+           ============================================ */
+        LEFT JOIN loan_case_payments lcp
+          ON lc.id = lcp.case_id
 
         /* ============================================
            LATEST PDD DOCUMENT
@@ -1060,6 +1079,12 @@ router.get(
             sanction_amount: row.sanction_amount,
             status: row.case_status,
             bank: row.bank_name || null,
+            product_id: row.product_id || null,
+            product_name: row.product_name || null,
+            payout_option_id: row.payout_option_id || null,
+            option_label: row.option_label || null,
+            payout_percentage: row.payout_percentage !== null ? Number(row.payout_percentage) : null,
+            calculated_commission: row.calculated_commission !== null ? Number(row.calculated_commission) : null,
           },
 
           // ============================================
@@ -1080,6 +1105,21 @@ router.get(
             pdd_cleared: row.pdd_cleared,
             created_at: row.created_at,
             updated_at: row.updated_at,
+          },
+
+          // ============================================
+          // PAYMENT / SETTLEMENT & CORPORATE INFLOW
+          // ============================================
+          payment: {
+            id: row.payment_id || null,
+            payment_amount: row.payment_amount !== null ? Number(row.payment_amount) : null,
+            corporate_rate: row.corporate_rate !== null ? Number(row.corporate_rate) : null,
+            corporate_amount: row.corporate_amount !== null ? Number(row.corporate_amount) : null,
+            corporate_received_amount: row.corporate_received_amount !== null ? Number(row.corporate_received_amount) : 0,
+            admin_profit: row.admin_profit !== null ? Number(row.admin_profit) : null,
+            corporate_payment_status: row.corporate_payment_status || "PENDING",
+            corporate_received_at: row.corporate_received_at || null,
+            dsa_payment_status: row.payment_amount ? "PAID" : "PENDING",
           },
 
           // ============================================

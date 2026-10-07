@@ -160,10 +160,10 @@ const validateLoanDisbursement = (data) => {
 // ======================================================
 
 const validatePddDocument = (file) => {
+  // PDD document upload is no longer mandatory
   if (!file) {
     return {
-      success: false,
-      message: "PDD document is required when PDD is cleared",
+      success: true,
     };
   }
 
