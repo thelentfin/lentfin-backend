@@ -72,6 +72,26 @@ const dsaSignupSchema = z
     // ==================================================
 
     name: z.string().trim().min(2).max(150),
+    // ==================================================
+    // FIRM NAME
+    // ==================================================
+
+    firm_name: z
+      .string()
+      .trim()
+      .max(200, "Firm Name must not exceed 200 characters")
+      .optional()
+      .or(z.literal("")),
+    // ==================================================
+    // REFERRAL CODE
+    // ==================================================
+
+    referral_code: z
+      .string()
+      .trim()
+      .max(50, "Referral Code must not exceed 50 characters")
+      .optional()
+      .or(z.literal("")),
 
     email: z.string().trim().email().max(150),
 
@@ -211,6 +231,29 @@ const dsaSignupSchema = z
   // ====================================================
 
   .superRefine((data, ctx) => {
+
+    // ==================================================
+// FIRM NAME VALIDATION
+// ==================================================
+
+// Firm Name is REQUIRED for:
+// 1. Proprietorship
+// 2. Partnership/LLP
+// 3. Private Limited
+
+if (
+  data.constitution_type === "Proprietorship" ||
+  data.constitution_type === "Partnership/LLP" ||
+  data.constitution_type === "Private Limited"
+) {
+  if (!data.firm_name || data.firm_name.trim() === "") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["firm_name"],
+      message: `Firm Name is required for ${data.constitution_type}.`,
+    });
+  }
+}
     // ==================================================
     // PARTNERSHIP / LLP
     // ==================================================

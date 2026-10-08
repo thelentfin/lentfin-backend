@@ -367,7 +367,44 @@ router.post(
       }
 
       const data = validation.data;
+      // ==================================================
+      // GENERATE UNIQUE REFERRAL CODE
+      // ==================================================
 
+      let referralCode = null;
+
+      const referralBase =
+        data.name
+          .replace(/[^a-zA-Z0-9]/g, "")
+          .toUpperCase()
+          .slice(0, 8) || "DSA";
+
+      let referralCodeExists = true;
+
+      while (referralCodeExists) {
+        const randomNumber = Math.floor(1000 + Math.random() * 9000);
+
+        referralCode = `${referralBase}${randomNumber}`;
+
+        const referralCheckQuery = `
+    SELECT id
+    FROM dsa_signup_requests
+    WHERE referral_code = ?
+
+    UNION
+
+    SELECT id
+    FROM dsa_users
+    WHERE referral_code = ?
+  `;
+
+        const referralCheckResult = await query(referralCheckQuery, [
+          referralCode,
+          referralCode,
+        ]);
+
+        referralCodeExists = referralCheckResult.length > 0;
+      }
       // ==================================================
       // 2. GET FILES
       // ==================================================
@@ -592,6 +629,8 @@ router.post(
       const insertRequestQuery = `
       INSERT INTO dsa_signup_requests (
         name,
+        firm_name,
+    referral_code,
         email,
         mobile,
         pan_number,
@@ -608,7 +647,7 @@ router.post(
         status
       )
       VALUES (
-         ?, ?, ?, ?, ?, ?, ?, ?,?, ?, ?,?, ?, ?, 'PENDING'
+         ?, ?,?,?, ?, ?, ?, ?, ?, ?,?, ?, ?,?, ?, ?, 'PENDING'
       )
     `;
 
@@ -620,6 +659,13 @@ router.post(
         // data.location || null,
 
         data.name,
+        data.firm_name?.trim() || null,
+
+        // ==================================================
+        // AUTO-GENERATED REFERRAL CODE
+        // ==================================================
+
+        referralCode,
         data.email,
         data.mobile,
 
@@ -1083,6 +1129,14 @@ router.post(
                 <strong>Name:</strong>
                 ${data.name}
               </p>
+              <p>
+  <strong>Firm Name:</strong>
+  ${data.firm_name || "-"}
+</p>
+<p>
+  <strong>Referral Code:</strong>
+  ${referralCode}
+</p>
 
               <p>
                 <strong>Email:</strong>
@@ -1188,6 +1242,7 @@ router.post(
         data: {
           request_id: requestId,
           status: "PENDING",
+          referral_code: referralCode,
         },
       });
     } catch (error) {
@@ -1219,6 +1274,8 @@ router.get(
         SELECT
           r.id,
           r.name,
+           r.firm_name,
+  r.referral_code,
           r.email,
           r.mobile,
           r.status,
@@ -1774,6 +1831,8 @@ router.put(
         SELECT
           id,
           name,
+          firm_name,
+    referral_code,
           email,
           mobile,
           status,
@@ -2241,6 +2300,26 @@ router.put(
                     </td>
 
                   </tr>
+                  <tr>
+  <td
+    style="
+      padding:12px;
+      border:1px solid #eeeeee;
+      font-weight:bold;
+    "
+  >
+    Firm Name
+  </td>
+
+  <td
+    style="
+      padding:12px;
+      border:1px solid #eeeeee;
+    "
+  >
+    ${request.firm_name || "-"}
+  </td>
+</tr>
 
                   <tr>
 
@@ -2743,6 +2822,8 @@ router.put(
           location_id,
           location,
           name,
+            firm_name,
+    referral_code,
           email,
           mobile,
           password,
@@ -2785,6 +2866,8 @@ router.put(
           ?,
           ?,
           ?,
+          ?,
+          ?,
           'DSA',
           'Active',
           1,
@@ -2804,6 +2887,8 @@ router.put(
         request.location,
 
         request.name,
+        request.firm_name || null,
+        request.referral_code || null,
         request.email,
         request.mobile,
 
@@ -3371,6 +3456,16 @@ router.put(
                       </td>
 
                     </tr>
+ 
+<tr>
+  <td style="padding:12px;border:1px solid #eeeeee;font-weight:bold;">
+    Referral Code
+  </td>
+
+  <td style="padding:12px;border:1px solid #eeeeee;">
+    ${request.referral_code || "-"}
+  </td>
+</tr>
 
                     <tr>
 
@@ -3699,6 +3794,8 @@ router.get("/users", authenticateAndAuthorize(), async (req, res) => {
 
           -- BASIC DETAILS
           d.name,
+          d.firm_name,
+d.referral_code,
           d.email,
           d.mobile,
 
