@@ -177,6 +177,60 @@ router.get(["/dsa/ifsc/:code", "/ifsc/:code"], async (req, res) => {
     });
   }
 });
+
+// ======================================================
+// CHECK REFERRAL CODE (Public)
+// GET /api/dsa/check-referral/:code or GET /api/check-referral/:code
+// ======================================================
+
+router.get(
+  ["/dsa/check-referral/:code", "/check-referral/:code"],
+  async (req, res) => {
+    try {
+      const rawCode = (req.params.code || "").trim();
+      if (!rawCode) {
+        return res.status(400).json({
+          status: false,
+          message: "Referral code is required",
+        });
+      }
+
+      const sql = `
+        SELECT id, name, firm_name, dsa_code, referral_code
+        FROM dsa_users
+        WHERE (referral_code = ? OR dsa_code = ?)
+          AND status = 'Active'
+        LIMIT 1
+      `;
+      const result = await query(sql, [rawCode, rawCode]);
+
+      if (result.length === 0) {
+        return res.status(404).json({
+          status: false,
+          message: "Invalid or inactive referral code",
+        });
+      }
+
+      return res.json({
+        status: true,
+        message: "Valid referral code",
+        data: {
+          id: result[0].id,
+          name: result[0].name,
+          firm_name: result[0].firm_name || null,
+          dsa_code: result[0].dsa_code,
+          referral_code: result[0].referral_code,
+        },
+      });
+    } catch (error) {
+      console.error("Check referral error:", error);
+      return res.status(500).json({
+        status: false,
+        message: "Internal error checking referral code",
+      });
+    }
+  }
+);
 //1st api
 // ======================================================
 // 1. DSA SIGNUP REQUEST (PUBLIC)
@@ -405,6 +459,41 @@ router.post(
 
         referralCodeExists = referralCheckResult.length > 0;
       }
+
+      // ==================================================
+      // RESOLVE REFERRED BY DSA (IF PROVIDED)
+      // ==================================================
+
+      let referredByDsaId = null;
+      let referredByCode = null;
+
+      if (data.referral_code && data.referral_code.trim() !== "") {
+        const inputRefCode = data.referral_code.trim();
+        const referrerQuery = `
+          SELECT id, referral_code, dsa_code
+          FROM dsa_users
+          WHERE (referral_code = ? OR dsa_code = ?)
+            AND status = 'Active'
+          LIMIT 1
+        `;
+        const referrerResult = await query(referrerQuery, [
+          inputRefCode,
+          inputRefCode,
+        ]);
+
+        if (referrerResult.length > 0) {
+          referredByDsaId = referrerResult[0].id;
+          referredByCode =
+            referrerResult[0].referral_code ||
+            referrerResult[0].dsa_code ||
+            inputRefCode;
+        } else {
+          return res.status(400).json({
+            status: false,
+            message: "Invalid referral code. Please check or leave blank.",
+          });
+        }
+      }
       // ==================================================
       // 2. GET FILES
       // ==================================================
@@ -630,7 +719,9 @@ router.post(
       INSERT INTO dsa_signup_requests (
         name,
         firm_name,
-    referral_code,
+        referral_code,
+        referred_by_code,
+        referred_by_dsa_id,
         email,
         mobile,
         pan_number,
@@ -638,7 +729,7 @@ router.post(
         gst_number,
         constitution_type,
         dsa_location,
-          msme_number,
+        msme_number,
         account_holder_name,
         account_number,
         ifsc_code,
@@ -647,7 +738,7 @@ router.post(
         status
       )
       VALUES (
-         ?, ?,?,?, ?, ?, ?, ?, ?, ?,?, ?, ?,?, ?, ?, 'PENDING'
+         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING'
       )
     `;
 
@@ -666,6 +757,8 @@ router.post(
         // ==================================================
 
         referralCode,
+        referredByCode || null,
+        referredByDsaId || null,
         data.email,
         data.mobile,
 
@@ -2822,8 +2915,10 @@ router.put(
           location_id,
           location,
           name,
-            firm_name,
-    referral_code,
+          firm_name,
+          referral_code,
+          referred_by_code,
+          referred_by_dsa_id,
           email,
           mobile,
           password,
@@ -2868,6 +2963,8 @@ router.put(
           ?,
           ?,
           ?,
+          ?,
+          ?,
           'DSA',
           'Active',
           1,
@@ -2889,6 +2986,8 @@ router.put(
         request.name,
         request.firm_name || null,
         request.referral_code || null,
+        request.referred_by_code || null,
+        request.referred_by_dsa_id || null,
         request.email,
         request.mobile,
 
@@ -4172,5 +4271,194 @@ d.referral_code,
     });
   }
 });
+
+// ======================================================
+// GET MY REFERRALS (DSA Portal)
+// GET /api/dsa/my-referrals
+// ======================================================
+
+router.get(
+  ["/my-referrals", "/dsa/my-referrals"],
+  authenticateAndAuthorize("DSA"),
+  async (req, res) => {
+    try {
+      const dsaId = req.user.id;
+      const sql = `
+        SELECT
+          u.id,
+          u.name,
+          u.firm_name,
+          u.dsa_code,
+          u.referral_code,
+          u.email,
+          u.mobile,
+          u.status,
+          u.created_at
+        FROM dsa_users u
+        WHERE u.referred_by_dsa_id = ?
+        ORDER BY u.id DESC
+      `;
+      const referrals = await query(sql, [dsaId]);
+      return res.json({
+        status: true,
+        count: referrals.length,
+        data: referrals,
+      });
+    } catch (error) {
+      console.error("Error fetching referrals:", error);
+      return res.status(500).json({
+        status: false,
+        message: "Failed to fetch referrals",
+      });
+    }
+  }
+);
+// ======================================================
+// GET REFERRAL NETWORK WITH BUSINESS METRICS (DSA Portal)
+// GET /api/dsa/referral-network
+// ======================================================
+
+router.get(
+  ["/referral-network", "/dsa/referral-network"],
+  authenticateAndAuthorize("DSA"),
+  async (req, res) => {
+    try {
+      const dsaId = req.user.id;
+
+      const sql = `
+        SELECT 
+          u.id,
+          u.name,
+          u.firm_name,
+          u.dsa_code,
+          u.referral_code,
+          u.email,
+          u.mobile,
+          u.status,
+          u.created_at,
+          COUNT(lc.id) AS total_cases,
+          SUM(CASE WHEN lc.status IN ('ACCEPTED', 'DISBURSED') THEN 1 ELSE 0 END) AS approved_cases,
+          SUM(CASE WHEN lc.status IN ('SUBMITTED', 'DRAFT') THEN 1 ELSE 0 END) AS pending_cases,
+          SUM(CASE WHEN lc.status = 'REJECTED' THEN 1 ELSE 0 END) AS rejected_cases,
+          COALESCE(SUM(CASE WHEN lc.status IN ('ACCEPTED', 'DISBURSED') THEN lc.sanction_amount ELSE 0 END), 0) AS total_sanction_amount
+        FROM dsa_users u
+        LEFT JOIN loan_cases lc ON lc.dsa_id = u.id
+        WHERE u.referred_by_dsa_id = ?
+        GROUP BY u.id
+        ORDER BY u.id DESC
+      `;
+
+      const partners = await query(sql, [dsaId]);
+
+      // Calculate summary totals
+      const summary = partners.reduce(
+        (acc, p) => {
+          acc.totalPartners += 1;
+          if (p.status === "Active") acc.activePartners += 1;
+          acc.totalCases += Number(p.total_cases || 0);
+          acc.approvedCases += Number(p.approved_cases || 0);
+          acc.pendingCases += Number(p.pending_cases || 0);
+          acc.rejectedCases += Number(p.rejected_cases || 0);
+          acc.totalSanctionAmount += Number(p.total_sanction_amount || 0);
+          return acc;
+        },
+        {
+          totalPartners: 0,
+          activePartners: 0,
+          totalCases: 0,
+          approvedCases: 0,
+          pendingCases: 0,
+          rejectedCases: 0,
+          totalSanctionAmount: 0,
+        }
+      );
+
+      return res.json({
+        status: true,
+        data: {
+          summary,
+          partners,
+        },
+      });
+    } catch (error) {
+      console.error("Error fetching referral network:", error);
+      return res.status(500).json({
+        status: false,
+        message: "Failed to fetch referral network",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// ======================================================
+// GET SPECIFIC REFERRED PARTNER'S CASES (DSA Portal)
+// GET /api/dsa/referral-network/:partnerId/cases
+// ======================================================
+
+router.get(
+  ["/referral-network/:partnerId/cases", "/dsa/referral-network/:partnerId/cases"],
+  authenticateAndAuthorize("DSA"),
+  async (req, res) => {
+    try {
+      const dsaId = req.user.id;
+      const partnerId = req.params.partnerId;
+
+      // Security check: Verify that this partner was indeed referred by the logged-in DSA
+      const partnerCheckSql = `
+        SELECT id, name, firm_name, dsa_code, referral_code, email, mobile, status
+        FROM dsa_users
+        WHERE id = ? AND referred_by_dsa_id = ?
+        LIMIT 1
+      `;
+
+      const partnerResult = await query(partnerCheckSql, [partnerId, dsaId]);
+
+      if (partnerResult.length === 0) {
+        return res.status(404).json({
+          status: false,
+          message: "Referred partner not found or does not belong to your network",
+        });
+      }
+
+      const partner = partnerResult[0];
+
+      // Fetch partner's loan cases
+      const casesSql = `
+        SELECT 
+          lc.id,
+          lc.case_number,
+          lc.customer_name,
+          lc.sanction_amount,
+          lc.status,
+          lc.created_at,
+          prod.product_name,
+          b.bank_name
+        FROM loan_cases lc
+        LEFT JOIN products prod ON lc.product_id = prod.id
+        LEFT JOIN banks b ON lc.bank_id = b.id
+        WHERE lc.dsa_id = ?
+        ORDER BY lc.id DESC
+      `;
+
+      const cases = await query(casesSql, [partnerId]);
+
+      return res.json({
+        status: true,
+        data: {
+          partner,
+          cases,
+        },
+      });
+    } catch (error) {
+      console.error("Error fetching partner cases:", error);
+      return res.status(500).json({
+        status: false,
+        message: "Failed to fetch partner cases",
+        error: error.message,
+      });
+    }
+  }
+);
 
 module.exports = router;
