@@ -563,6 +563,8 @@ router.get("/dsa", requireAuth, async (req, res) => {
         SELECT
           d.id,
           d.dsa_code,
+          d.referral_code,
+          d.firm_name,
           d.name,
           d.email,
           d.mobile,
