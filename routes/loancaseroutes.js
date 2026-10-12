@@ -544,78 +544,57 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       );
 
       // ==================================================
-      // STEP 19
-      // UPLOAD SANCTION LETTER TO CLOUDINARY
+      // STEP 19 - 22
+      // UPLOAD SANCTION LETTER TO CLOUDINARY (IF PROVIDED)
       // ==================================================
 
-      const cloudinaryResult = await uploadToCloudinary(
-        req.file,
-        `lentfin/loan_cases/${caseNumber}`,
-      );
+      if (req.file) {
+        const cloudinaryResult = await uploadToCloudinary(
+          req.file,
+          `lentfin/loan_cases/${caseNumber}`,
+        );
 
-      // ==================================================
-      // STEP 20
-      // SAVE CLOUDINARY INFO FOR CLEANUP
-      // ==================================================
+        // SAVE CLOUDINARY INFO FOR CLEANUP
+        uploadedCloudinaryFile = {
+          public_id: cloudinaryResult.public_id,
+          resource_type: cloudinaryResult.resource_type,
+        };
 
-      uploadedCloudinaryFile = {
-        public_id: cloudinaryResult.public_id,
+        const fileFormat =
+          cloudinaryResult.format ||
+          (req.file.originalname
+            ? req.file.originalname.split(".").pop().toLowerCase()
+            : null) ||
+          "pdf";
 
-        resource_type: cloudinaryResult.resource_type,
-      };
-
-      // ==================================================
-      // STEP 21
-      // GET FILE FORMAT
-      // ==================================================
-
-      const fileFormat =
-        cloudinaryResult.format ||
-        (req.file.originalname
-          ? req.file.originalname.split(".").pop().toLowerCase()
-          : null) ||
-        "pdf";
-
-      // ==================================================
-      // STEP 22
-      // INSERT DOCUMENT
-      // ==================================================
-
-      await query(
-        `
-          INSERT INTO loan_case_documents (
-            case_id,
-            document_type,
-            original_name,
-            cloudinary_public_id,
-            cloudinary_url,
-            secure_url,
-            resource_type,
-            file_format,
-            file_size
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          createdCaseId,
-
-          "SANCTION_LETTER",
-
-          req.file.originalname,
-
-          cloudinaryResult.public_id,
-
-          cloudinaryResult.url,
-
-          cloudinaryResult.secure_url,
-
-          cloudinaryResult.resource_type,
-
-          fileFormat,
-
-          req.file.size,
-        ],
-      );
+        await query(
+          `
+            INSERT INTO loan_case_documents (
+              case_id,
+              document_type,
+              original_name,
+              cloudinary_public_id,
+              cloudinary_url,
+              secure_url,
+              resource_type,
+              file_format,
+              file_size
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            createdCaseId,
+            "SANCTION_LETTER",
+            req.file.originalname,
+            cloudinaryResult.public_id,
+            cloudinaryResult.url,
+            cloudinaryResult.secure_url,
+            cloudinaryResult.resource_type,
+            fileFormat,
+            req.file.size,
+          ],
+        );
+      }
 
       // ==================================================
       // STEP 23

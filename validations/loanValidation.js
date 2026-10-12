@@ -127,13 +127,12 @@ const validateLoanCase = (data) => {
 
 const validateSanctionLetter = (file) => {
   // ----------------------------------------------------
-  // FILE REQUIRED
+  // FILE OPTIONAL (IF NOT PROVIDED, PASS VALIDATION)
   // ----------------------------------------------------
 
   if (!file) {
     return {
-      success: false,
-      message: "Sanction letter is required",
+      success: true,
     };
   }
 
