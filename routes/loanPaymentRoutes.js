@@ -163,16 +163,20 @@ router.post(
       const caseResult = await query(
         `
         SELECT
-          id,
-          case_number,
-          dsa_id,
-          customer_name,
-          sanction_amount,
-          payout_percentage,
-          status
-        FROM loan_cases
-        WHERE id = ?
-          AND dsa_id = ?
+          lc.id,
+          lc.case_number,
+          lc.dsa_id,
+          lc.customer_name,
+          lc.sanction_amount,
+          lc.payout_percentage,
+          lc.company_id,
+          lc.status,
+          c.spot_payment_percentage,
+          c.five_days_payment_percentage
+        FROM loan_cases lc
+        LEFT JOIN companies c ON lc.company_id = c.id
+        WHERE lc.id = ?
+          AND lc.dsa_id = ?
         LIMIT 1
         `,
         [validatedCaseId, dsaId],
@@ -242,12 +246,26 @@ router.post(
       }
 
       // ==================================================
-      // STEP 9 - GET FIXED PERCENTAGE
+      // STEP 9 - GET RESOLVED PERCENTAGE
       // ==================================================
 
-      const paymentPercentage = getPaymentPercentage(validatedPaymentOption);
+      let paymentPercentage = getPaymentPercentage(validatedPaymentOption);
 
-      if (paymentPercentage === null) {
+      if (
+        validatedPaymentOption === "SPOT_48_HOURS" &&
+        loanCase.spot_payment_percentage !== null &&
+        loanCase.spot_payment_percentage !== undefined
+      ) {
+        paymentPercentage = Number(loanCase.spot_payment_percentage);
+      } else if (
+        validatedPaymentOption === "AFTER_5_DAYS" &&
+        loanCase.five_days_payment_percentage !== null &&
+        loanCase.five_days_payment_percentage !== undefined
+      ) {
+        paymentPercentage = Number(loanCase.five_days_payment_percentage);
+      }
+
+      if (paymentPercentage === null || !Number.isFinite(paymentPercentage)) {
         return res.status(400).json({
           status: false,
           message: "Invalid payment option",

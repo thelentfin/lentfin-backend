@@ -7,8 +7,14 @@ const db = require("../db");
 // ===========================
 
 router.post("/add-company", (req, res) => {
-  const { company_name,  company_email, company_mobile } =
-    req.body;
+  const {
+    company_name,
+    company_email,
+    company_mobile,
+    spot_payment_percentage,
+    five_days_payment_percentage,
+    standard_payment_days,
+  } = req.body;
 
   if (!company_name) {
     return res.json({
@@ -16,6 +22,27 @@ router.post("/add-company", (req, res) => {
       message: "Company Name Required",
     });
   }
+
+  const spotPct =
+    spot_payment_percentage !== undefined &&
+    spot_payment_percentage !== "" &&
+    !isNaN(Number(spot_payment_percentage))
+      ? Number(spot_payment_percentage)
+      : 0.85;
+
+  const fiveDaysPct =
+    five_days_payment_percentage !== undefined &&
+    five_days_payment_percentage !== "" &&
+    !isNaN(Number(five_days_payment_percentage))
+      ? Number(five_days_payment_percentage)
+      : 0.90;
+
+  const standardDays =
+    standard_payment_days !== undefined &&
+    standard_payment_days !== "" &&
+    !isNaN(Number(standard_payment_days))
+      ? parseInt(standard_payment_days, 10)
+      : 5;
 
   const checkQuery = "SELECT * FROM companies WHERE company_name = ?";
 
@@ -34,29 +61,32 @@ router.post("/add-company", (req, res) => {
       });
     }
 
-   const insertQuery = `
+    const insertQuery = `
 INSERT INTO companies
 (
     company_name,
     company_email,
-    company_mobile
+    company_mobile,
+    spot_payment_percentage,
+    five_days_payment_percentage,
+    standard_payment_days
 )
-VALUES (?,?,?)
+VALUES (?,?,?,?,?,?)
 `;
 
     db.query(
       insertQuery,
-      [company_name, company_email, company_mobile],
+      [company_name, company_email, company_mobile, spotPct, fiveDaysPct, standardDays],
       (err, result) => {
-       if (err) {
-         console.error("COMPANY INSERT ERROR:", err);
+        if (err) {
+          console.error("COMPANY INSERT ERROR:", err);
 
-         return res.status(500).json({
-           status: false,
-           message: "Insert Error",
-           error: err.message,
-         });
-       }
+          return res.status(500).json({
+            status: false,
+            message: "Insert Error",
+            error: err.message,
+          });
+        }
         
         // ==================================================
         // SOCKET.IO EVENT
@@ -137,34 +167,60 @@ router.put("/update-company/:id", (req, res) => {
     company_email,
     company_mobile,
     status,
+    spot_payment_percentage,
+    five_days_payment_percentage,
+    standard_payment_days,
   } = req.body;
+
+  const spotPct =
+    spot_payment_percentage !== undefined &&
+    spot_payment_percentage !== "" &&
+    !isNaN(Number(spot_payment_percentage))
+      ? Number(spot_payment_percentage)
+      : null;
+
+  const fiveDaysPct =
+    five_days_payment_percentage !== undefined &&
+    five_days_payment_percentage !== "" &&
+    !isNaN(Number(five_days_payment_percentage))
+      ? Number(five_days_payment_percentage)
+      : null;
+
+  const standardDays =
+    standard_payment_days !== undefined &&
+    standard_payment_days !== "" &&
+    !isNaN(Number(standard_payment_days))
+      ? parseInt(standard_payment_days, 10)
+      : null;
 
   const query = `
     UPDATE companies
     SET
-
-    company_name=?,
-
-    company_email=?,
-
-    company_mobile=?,
-
-    status=?
-
-    WHERE id=?
-    `;
+      company_name = COALESCE(?, company_name),
+      company_email = COALESCE(?, company_email),
+      company_mobile = COALESCE(?, company_mobile),
+      status = COALESCE(?, status),
+      spot_payment_percentage = COALESCE(?, spot_payment_percentage),
+      five_days_payment_percentage = COALESCE(?, five_days_payment_percentage),
+      standard_payment_days = COALESCE(?, standard_payment_days)
+    WHERE id = ?
+  `;
 
   db.query(
     query,
     [
-      company_name,
-      company_email,
-      company_mobile,
-      status,
+      company_name !== undefined ? company_name : null,
+      company_email !== undefined ? company_email : null,
+      company_mobile !== undefined ? company_mobile : null,
+      status !== undefined ? status : null,
+      spotPct,
+      fiveDaysPct,
+      standardDays,
       id,
     ],
     (err) => {
       if (err) {
+        console.error("COMPANY UPDATE ERROR:", err);
         return res.status(500).json({
           status: false,
           message: "Update Error",

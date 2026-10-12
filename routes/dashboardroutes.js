@@ -392,6 +392,8 @@ router.get("/admin", requireAuth, async (req, res) => {
     let earnedCommission = 0;
     let pendingCommission = 0;
     const dsaStats = {};
+    const bankStats = {};
+    const productStats = {};
 
     const enrichedLoanCases = (loanCases[0] || []).map((lc) => {
       const p = paymentsMap[lc.id];
@@ -425,6 +427,34 @@ router.get("/admin", requireAuth, async (req, res) => {
         pendingCommission += comm;
       }
 
+      // Group by Bank Partner for Bank Distribution Breakdown
+      const bankName = (lc.bank_name || "Direct / Unassigned").trim();
+      if (!bankStats[bankName]) {
+        bankStats[bankName] = {
+          name: bankName,
+          count: 0,
+          volume: 0,
+          disbursed_volume: 0,
+          sanctioned_volume: 0,
+        };
+      }
+      bankStats[bankName].count += 1;
+      bankStats[bankName].volume += baseAmount;
+      bankStats[bankName].disbursed_volume += disbAmt;
+      bankStats[bankName].sanctioned_volume += sanctionAmt;
+
+      // Group by Loan Product for Product Mix Breakdown
+      const productName = (lc.product_name || "Uncategorized").trim();
+      if (!productStats[productName]) {
+        productStats[productName] = {
+          name: productName,
+          count: 0,
+          volume: 0,
+        };
+      }
+      productStats[productName].count += 1;
+      productStats[productName].volume += baseAmount;
+
       // Group by DSA for Top 5 DSA Performance (only registered DSA partners)
       const cleanDsaName = (lc.dsa_name || "").trim();
       if (cleanDsaName && cleanDsaName.toLowerCase() !== "direct / unassigned" && lc.dsa_id) {
@@ -435,12 +465,14 @@ router.get("/admin", requireAuth, async (req, res) => {
             count: 0,
             volume: 0,
             commission: 0,
+            accepted_count: 0,
           };
         }
         dsaStats[cleanDsaName].count += 1;
         dsaStats[cleanDsaName].volume += sanctionAmt;
         if (isAccepted) {
           dsaStats[cleanDsaName].commission += comm;
+          dsaStats[cleanDsaName].accepted_count += 1;
         }
       }
 
@@ -456,7 +488,124 @@ router.get("/admin", requireAuth, async (req, res) => {
 
     const topDsaPerformance = Object.values(dsaStats)
       .sort((a, b) => b.count - a.count || b.volume - a.volume)
-      .slice(0, 5);
+      .slice(0, 5)
+      .map((d) => ({
+        ...d,
+        approval_rate: d.count > 0 ? Math.round((d.accepted_count / d.count) * 100) : 0,
+      }));
+
+    const totalBankVol = Object.values(bankStats).reduce((acc, b) => acc + b.volume, 0) || 1;
+    const bankDistribution = Object.values(bankStats)
+      .sort((a, b) => b.volume - a.volume || b.count - a.count)
+      .map((b) => ({
+        ...b,
+        share_pct: Math.round((b.volume / totalBankVol) * 100),
+      }));
+
+    const totalProdVol = Object.values(productStats).reduce((acc, p) => acc + p.volume, 0) || 1;
+    const productDistribution = Object.values(productStats)
+      .sort((a, b) => b.volume - a.volume || b.count - a.count)
+      .map((p) => ({
+        ...p,
+        share_pct: Math.round((p.volume / totalProdVol) * 100),
+      }));
+
+    // ==================================================
+    // CORPORATE INFLOW & PLATFORM SPREAD AGGREGATIONS
+    // ==================================================
+
+    let totalBankInflow = 0;
+    let totalCorporateReceived = 0;
+    let totalRecoveryPending = 0;
+    let totalDsaOutflow = 0;
+    let paidDsaOutflow = 0;
+    let pendingDsaOutflow = 0;
+    let totalAdminProfit = 0;
+
+    (loanCases[0] || []).forEach((lc) => {
+      const p = paymentsMap[lc.id];
+      const sanctionAmt = Number(lc.sanction_amount || 0);
+      const disbAmt = Number(lc.disbursement_amount || 0);
+      const baseAmount = disbAmt > 0 ? disbAmt : sanctionAmt;
+
+      const paymentOption = String(p?.payment_option || lc.payment_option || "");
+      const dsaCommissionRate =
+        p?.payment_percentage !== undefined && p?.payment_percentage !== null
+          ? Number(p.payment_percentage)
+          : (paymentOption.includes("48") || paymentOption.includes("SPOT") ? 0.85 : 0.90);
+
+      let dsaCommissionAmount = 0;
+      if (p?.payment_amount && Number(p.payment_amount) > 0) {
+        dsaCommissionAmount = Number(p.payment_amount);
+      } else if (baseAmount > 0) {
+        dsaCommissionAmount = Math.round((baseAmount * dsaCommissionRate) / 100);
+      }
+
+      const effectiveRate =
+        p?.corporate_rate !== null && p?.corporate_rate !== undefined && p?.corporate_rate !== ""
+          ? Number(p.corporate_rate)
+          : lc.payout_percentage !== null && lc.payout_percentage !== undefined && lc.payout_percentage !== ""
+          ? Number(lc.payout_percentage)
+          : lc.slab_percentage !== null && lc.slab_percentage !== undefined && lc.slab_percentage !== ""
+          ? Number(lc.slab_percentage)
+          : null;
+
+      const corporateRate = effectiveRate !== null && !isNaN(effectiveRate) ? effectiveRate : null;
+
+      let corporateInflowAmount = 0;
+      if (p?.corporate_amount !== null && p?.corporate_amount !== undefined && Number(p.corporate_amount) > 0) {
+        corporateInflowAmount = Number(p.corporate_amount);
+      } else if (corporateRate !== null && baseAmount > 0) {
+        corporateInflowAmount = Math.round(((baseAmount * corporateRate) / 100) * 100) / 100;
+      }
+
+      let netProfitSpread = 0;
+      if (corporateRate !== null) {
+        netProfitSpread = Math.max(0, Math.round((corporateInflowAmount - dsaCommissionAmount) * 100) / 100);
+      }
+
+      const corporateReceivedAmount = Number(p?.corporate_received_amount || 0);
+      const recoveryBalance = Math.max(0, Math.round((corporateInflowAmount - corporateReceivedAmount) * 100) / 100);
+
+      const status = String(lc.status || "").toUpperCase().trim();
+      const isAccepted = ["ACCEPTED", "APPROVED", "VERIFIED"].includes(status);
+
+      totalBankInflow += corporateInflowAmount;
+      totalCorporateReceived += corporateReceivedAmount;
+      totalRecoveryPending += recoveryBalance;
+      totalDsaOutflow += dsaCommissionAmount;
+      totalAdminProfit += netProfitSpread;
+
+      if (isAccepted) {
+        paidDsaOutflow += dsaCommissionAmount;
+      } else {
+        pendingDsaOutflow += dsaCommissionAmount;
+      }
+    });
+
+    const averageMargin = totalDisbursed > 0 && totalAdminProfit > 0 ? (totalAdminProfit / totalDisbursed) * 100 : 0;
+
+    const financialMetrics = {
+      corporateInflow: {
+        total: totalBankInflow,
+        received: totalCorporateReceived,
+        pending: totalRecoveryPending,
+      },
+      dsaPayouts: {
+        total: totalDsaOutflow,
+        paid: paidDsaOutflow,
+        pending: pendingDsaOutflow,
+      },
+      netPlatformSpread: {
+        totalProfit: totalAdminProfit,
+        averageMargin: Math.round(averageMargin * 100) / 100,
+      },
+      portfolioDisbursed: {
+        totalDisbursed: totalDisbursed,
+        totalSanctioned: totalSanctioned,
+        totalCases: (loanCases[0] || []).length,
+      },
+    };
 
     // ==================================================
     // FINAL RESPONSE
@@ -492,8 +641,12 @@ router.get("/admin", requireAuth, async (req, res) => {
           earnedCommission: earnedCommission,
           pendingCommission: pendingCommission,
           topDsaPerformance: topDsaPerformance,
+          financialMetrics: financialMetrics,
+          bankDistribution: bankDistribution,
+          productDistribution: productDistribution,
         },
 
+        financialMetrics: financialMetrics,
         companies: companies[0],
         banks: banks[0],
         locations: locations[0],
@@ -508,6 +661,8 @@ router.get("/admin", requireAuth, async (req, res) => {
         notifications: notifications[0],
         loanCases: enrichedLoanCases,
         topDsaPerformance: topDsaPerformance,
+        bankDistribution: bankDistribution,
+        productDistribution: productDistribution,
         payments: payments[0],
         disbursements: disbursements[0],
         smAsmDetails: smAsmDetails[0],
@@ -833,6 +988,69 @@ router.get("/dsa", requireAuth, async (req, res) => {
     });
 
     // ==================================================
+    // AGGREGATIONS: PAYOUT SETTLEMENT & BANK PERFORMANCE
+    // ==================================================
+
+    const payoutSettlement = {
+      spot48h: {
+        rate: "0.85%",
+        casesCount: 0,
+        disbursedAmount: 0,
+        commissionEarned: 0,
+      },
+      standard5Days: {
+        rate: "0.90%",
+        casesCount: 0,
+        disbursedAmount: 0,
+        commissionEarned: 0,
+      },
+    };
+
+    const bankMap = {};
+
+    enrichedLoanCases.forEach((lc) => {
+      const isSpot =
+        String(lc.payment_option || "").includes("48") ||
+        String(lc.payment_option || "").toUpperCase().includes("SPOT") ||
+        Number(lc.payment_percentage) === 0.85;
+      const targetSettlement = isSpot
+        ? payoutSettlement.spot48h
+        : payoutSettlement.standard5Days;
+      targetSettlement.casesCount += 1;
+      targetSettlement.disbursedAmount += Number(lc.disbursement_amount || 0);
+      targetSettlement.commissionEarned += Number(lc.commission_amount || 0);
+
+      const bankName = lc.bank_name || "Other Partner Banks";
+      if (!bankMap[bankName]) {
+        bankMap[bankName] = {
+          bank_name: bankName,
+          totalCases: 0,
+          approvedCases: 0,
+          totalSanction: 0,
+          totalDisbursed: 0,
+        };
+      }
+      bankMap[bankName].totalCases += 1;
+      bankMap[bankName].totalSanction += Number(lc.sanction_amount || 0);
+      bankMap[bankName].totalDisbursed += Number(lc.disbursement_amount || 0);
+
+      const status = String(lc.status || "").toUpperCase().trim();
+      if (["ACCEPTED", "APPROVED", "VERIFIED"].includes(status)) {
+        bankMap[bankName].approvedCases += 1;
+      }
+    });
+
+    const bankPerformance = Object.values(bankMap)
+      .map((b) => ({
+        ...b,
+        approvalRate:
+          b.totalCases > 0
+            ? Number(((b.approvedCases / b.totalCases) * 100).toFixed(1))
+            : 0,
+      }))
+      .sort((a, b) => b.totalSanction - a.totalSanction);
+
+    // ==================================================
     // FINAL RESPONSE
     // ==================================================
 
@@ -855,6 +1073,9 @@ router.get("/dsa", requireAuth, async (req, res) => {
           pendingCommission: pendingCommission,
           totalCommission: earnedCommission,
         },
+
+        payoutSettlement,
+        bankPerformance,
 
         loanCases: enrichedLoanCases,
         payments: payments[0],
