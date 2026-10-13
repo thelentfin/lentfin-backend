@@ -738,12 +738,12 @@ router.get(
           FROM loan_case_disbursements lcd
 
           /* ============================================
-             OWNERSHIP CHECK ONLY
+             OWNERSHIP CHECK (MASTER DSA OR SUB-DSA)
              ============================================ */
 
           INNER JOIN loan_cases lc
             ON lcd.case_id = lc.id
-            AND lc.dsa_id = ?
+            AND (lc.dsa_id = ? OR lc.sub_dsa_id = ?)
 
           /* ============================================
              GET LATEST PDD DOCUMENT
@@ -759,7 +759,7 @@ router.get(
 
           ORDER BY lcd.id DESC
         `,
-        [dsaId],
+        [dsaId, dsaId],
       );
 
       // ==================================================
@@ -959,6 +959,12 @@ router.get(
           lcp.admin_profit,
           lcp.corporate_payment_status,
           lcp.corporate_received_at,
+          lcp.sub_dsa_id,
+          lcp.sub_dsa_percentage,
+          lcp.sub_dsa_amount,
+          lcp.dsa_override_percentage,
+          lcp.dsa_override_amount,
+          lcp.sub_dsa_payout_status,
 
 
           /* ============================================
@@ -969,6 +975,15 @@ router.get(
           dsa.name AS dsa_name,
           dsa.email AS dsa_email,
           dsa.status AS dsa_status,
+
+          /* ============================================
+             SUB-DSA / REFERRAL PARTNER DETAILS
+             ============================================ */
+          sub_dsa.id AS referral_sub_dsa_id,
+          sub_dsa.dsa_code AS sub_dsa_code,
+          sub_dsa.name AS sub_dsa_name,
+          sub_dsa.mobile AS sub_dsa_mobile,
+          sub_dsa.email AS sub_dsa_email,
 
 
           /* ============================================
@@ -1021,6 +1036,13 @@ router.get(
 
         INNER JOIN dsa_users dsa
           ON lc.dsa_id = dsa.id
+
+        /* ============================================
+           SUB-DSA (REFERRAL PARTNER)
+           ============================================ */
+
+        LEFT JOIN dsa_users sub_dsa
+          ON lc.sub_dsa_id = sub_dsa.id
 
         /* ============================================
            PAYMENT / SETTLEMENT
@@ -1108,6 +1130,19 @@ router.get(
           },
 
           // ============================================
+          // SUB-DSA (REFERRAL PARTNER) DETAILS
+          // ============================================
+          sub_dsa: row.referral_sub_dsa_id
+            ? {
+                id: row.referral_sub_dsa_id,
+                dsa_code: row.sub_dsa_code,
+                name: row.sub_dsa_name,
+                mobile: row.sub_dsa_mobile,
+                email: row.sub_dsa_email,
+              }
+            : null,
+
+          // ============================================
           // PAYMENT / SETTLEMENT & CORPORATE INFLOW
           // ============================================
           payment: {
@@ -1120,6 +1155,12 @@ router.get(
             corporate_payment_status: row.corporate_payment_status || "PENDING",
             corporate_received_at: row.corporate_received_at || null,
             dsa_payment_status: row.payment_amount ? "PAID" : "PENDING",
+            sub_dsa_id: row.sub_dsa_id || null,
+            sub_dsa_percentage: row.sub_dsa_percentage !== null ? Number(row.sub_dsa_percentage) : null,
+            sub_dsa_amount: row.sub_dsa_amount !== null ? Number(row.sub_dsa_amount) : null,
+            dsa_override_percentage: row.dsa_override_percentage !== null ? Number(row.dsa_override_percentage) : null,
+            dsa_override_amount: row.dsa_override_amount !== null ? Number(row.dsa_override_amount) : null,
+            sub_dsa_payout_status: row.sub_dsa_payout_status || "PENDING",
           },
 
           // ============================================

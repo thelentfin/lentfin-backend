@@ -96,6 +96,7 @@ router.post(
       const validationResult = validateLoanPayment({
         case_id: req.body.case_id,
         payment_option: req.body.payment_option,
+        sub_dsa_percentage: req.body.sub_dsa_percentage,
       });
 
       if (!validationResult.success) {
@@ -117,6 +118,7 @@ router.post(
       const {
         case_id: validatedCaseId,
         payment_option: validatedPaymentOption,
+        sub_dsa_percentage: validatedSubDsaPct,
       } = validationResult.data;
 
       // ==================================================
@@ -166,6 +168,7 @@ router.post(
           lc.id,
           lc.case_number,
           lc.dsa_id,
+          lc.sub_dsa_id,
           lc.customer_name,
           lc.sanction_amount,
           lc.payout_percentage,
@@ -299,6 +302,27 @@ router.post(
         paymentPercentage,
       );
 
+      // Calculate Sub-DSA Commission & Master DSA Overriding Margin if lead was introduced by Sub-DSA
+      let subDsaPercentage = null;
+      let subDsaAmount = null;
+      let dsaOverridePercentage = null;
+      let dsaOverrideAmount = null;
+
+      if (loanCase.sub_dsa_id) {
+        if (validatedSubDsaPct !== undefined && validatedSubDsaPct !== null) {
+          subDsaPercentage = Number(validatedSubDsaPct);
+          if (subDsaPercentage > paymentPercentage) {
+            return res.status(400).json({
+              status: false,
+              message: `Sub-DSA share (${subDsaPercentage}%) cannot exceed base commission (${paymentPercentage}%)`,
+            });
+          }
+          subDsaAmount = Math.round(((disbursedAmount * subDsaPercentage) / 100) * 100) / 100;
+          dsaOverridePercentage = Math.round((paymentPercentage - subDsaPercentage) * 100) / 100;
+          dsaOverrideAmount = Math.round((paymentAmount - subDsaAmount) * 100) / 100;
+        }
+      }
+
       // Auto-populate Corporate Inflow Rate & Revenue from the selected partner slab
       const corporateRate =
         loanCase.payout_percentage !== null && loanCase.payout_percentage !== undefined
@@ -327,13 +351,19 @@ router.post(
           payment_percentage,
           loan_amount,
           payment_amount,
+          sub_dsa_id,
+          sub_dsa_percentage,
+          sub_dsa_amount,
+          dsa_override_percentage,
+          dsa_override_amount,
+          sub_dsa_payout_status,
           corporate_rate,
           corporate_amount,
           admin_profit,
           corporate_received_amount,
           corporate_payment_status
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.00, 'PENDING')
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, 0.00, 'PENDING')
         `,
         [
           validatedCaseId,
@@ -341,6 +371,11 @@ router.post(
           paymentPercentage,
           disbursedAmount,
           paymentAmount,
+          loanCase.sub_dsa_id || null,
+          subDsaPercentage,
+          subDsaAmount,
+          dsaOverridePercentage,
+          dsaOverrideAmount,
           corporateRate,
           corporateAmount,
           adminProfit,
@@ -530,7 +565,8 @@ router.get(
           dsa_code,
           name,
           email,
-          status
+          status,
+          referred_by_dsa_id
         FROM dsa_users
         WHERE id = ?
         LIMIT 1
@@ -556,6 +592,8 @@ router.get(
         });
       }
 
+      const isSubDsa = dsaResult[0].referred_by_dsa_id !== null;
+
       // ==================================================
       // STEP 4 - GET OWN PAYMENT DETAILS
       // ==================================================
@@ -574,6 +612,12 @@ router.get(
           lcp.payment_percentage,
           lcp.loan_amount,
           lcp.payment_amount,
+          lcp.sub_dsa_id,
+          lcp.sub_dsa_percentage,
+          lcp.sub_dsa_amount,
+          lcp.dsa_override_percentage,
+          lcp.dsa_override_amount,
+          lcp.sub_dsa_payout_status,
           lcp.created_at,
           lcp.updated_at,
 
@@ -599,14 +643,14 @@ router.get(
 
         INNER JOIN loan_cases lc
           ON lcp.case_id = lc.id
-          AND lc.dsa_id = ?
+          AND (lc.dsa_id = ? OR lc.sub_dsa_id = ?)
 
         INNER JOIN dsa_users dsa
           ON lc.dsa_id = dsa.id
 
         ORDER BY lcp.id DESC
         `,
-        [dsaId],
+        [dsaId, dsaId],
       );
 
       // ==================================================
@@ -614,6 +658,15 @@ router.get(
       // ==================================================
 
       const payments = paymentRows.map((row) => {
+        // If current user is Sub-DSA, present their specific rate & payout
+        const effectivePct = isSubDsa && row.sub_dsa_percentage !== null
+          ? row.sub_dsa_percentage
+          : (isSubDsa ? null : (row.dsa_override_percentage !== null ? row.dsa_override_percentage : row.payment_percentage));
+
+        const effectiveAmount = isSubDsa && row.sub_dsa_amount !== null
+          ? row.sub_dsa_amount
+          : (isSubDsa ? null : (row.dsa_override_amount !== null ? row.dsa_override_amount : row.payment_amount));
+
         return {
           dsa: {
             id: row.dsa_id,
@@ -632,10 +685,17 @@ router.get(
 
           payment: {
             id: row.id,
-            payment_option: row.payment_option,
-            payment_percentage: row.payment_percentage,
+            payment_option: isSubDsa
+              ? (String(row.payment_option || "").includes("48") || String(row.payment_option || "").toUpperCase().includes("SPOT")
+                  ? "Spot 48h Settlement"
+                  : "Standard 5-Days Settlement")
+              : row.payment_option,
+            payment_percentage: effectivePct,
             loan_amount: row.loan_amount,
-            payment_amount: row.payment_amount,
+            payment_amount: effectiveAmount,
+            sub_dsa_percentage: row.sub_dsa_percentage,
+            sub_dsa_amount: row.sub_dsa_amount,
+            sub_dsa_payout_status: row.sub_dsa_payout_status,
             created_at: row.created_at,
             updated_at: row.updated_at,
           },
@@ -741,6 +801,12 @@ router.get(
           lcp.admin_profit,
           lcp.corporate_payment_status,
           lcp.corporate_received_at,
+          lcp.sub_dsa_id,
+          lcp.sub_dsa_percentage,
+          lcp.sub_dsa_amount,
+          lcp.dsa_override_percentage,
+          lcp.dsa_override_amount,
+          lcp.sub_dsa_payout_status,
           lcp.created_at,
           lcp.updated_at,
 
@@ -769,7 +835,15 @@ router.get(
           dsa.dsa_code,
           dsa.name AS dsa_name,
           dsa.email AS dsa_email,
-          dsa.status AS dsa_status
+          dsa.status AS dsa_status,
+
+          /* ============================================
+             SUB-DSA DETAILS
+             ============================================ */
+          sub_dsa.dsa_code AS sub_dsa_code,
+          sub_dsa.name AS sub_dsa_name,
+          sub_dsa.mobile AS sub_dsa_mobile,
+          sub_dsa.email AS sub_dsa_email
 
         FROM loan_case_payments lcp
 
@@ -781,6 +855,9 @@ router.get(
 
         INNER JOIN dsa_users dsa
           ON lc.dsa_id = dsa.id
+
+        LEFT JOIN dsa_users sub_dsa
+          ON lc.sub_dsa_id = sub_dsa.id
 
         ORDER BY lcp.id DESC
         `,
@@ -799,6 +876,16 @@ router.get(
             email: row.dsa_email,
             status: row.dsa_status,
           },
+
+          sub_dsa: row.sub_dsa_id
+            ? {
+                id: row.sub_dsa_id,
+                dsa_code: row.sub_dsa_code,
+                name: row.sub_dsa_name,
+                mobile: row.sub_dsa_mobile,
+                email: row.sub_dsa_email,
+              }
+            : null,
 
           company: {
             id: row.company_id,
@@ -825,6 +912,12 @@ router.get(
             admin_profit: row.admin_profit,
             corporate_payment_status: row.corporate_payment_status,
             corporate_received_at: row.corporate_received_at,
+            sub_dsa_id: row.sub_dsa_id || null,
+            sub_dsa_percentage: row.sub_dsa_percentage !== null ? Number(row.sub_dsa_percentage) : null,
+            sub_dsa_amount: row.sub_dsa_amount !== null ? Number(row.sub_dsa_amount) : null,
+            dsa_override_percentage: row.dsa_override_percentage !== null ? Number(row.dsa_override_percentage) : null,
+            dsa_override_amount: row.dsa_override_amount !== null ? Number(row.dsa_override_amount) : null,
+            sub_dsa_payout_status: row.sub_dsa_payout_status || "PENDING",
             created_at: row.created_at,
             updated_at: row.updated_at,
           },

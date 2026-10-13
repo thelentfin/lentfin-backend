@@ -699,8 +699,38 @@ router.get("/dsa", requireAuth, async (req, res) => {
 
     const dsaId = req.user.id;
 
+    // 1. Fetch DSA Profile first to determine if user is a Referral Agent (Sub-DSA)
+    const [profileRows] = await db.promise().query(
+      `
+      SELECT
+        d.id,
+        d.dsa_code,
+        d.referral_code,
+        d.referred_by_dsa_id,
+        d.firm_name,
+        d.name,
+        d.email,
+        d.mobile,
+        d.role,
+        d.status,
+        d.company_id,
+        d.company_name,
+        d.location_id,
+        d.location,
+        d.created_at,
+        d.updated_at
+      FROM dsa_users d
+      WHERE d.id=?
+      LIMIT 1
+      `,
+      [dsaId]
+    );
+
+    const userProfile = profileRows[0] || {};
+    const isSubDsa = userProfile.referred_by_dsa_id !== null && userProfile.referred_by_dsa_id !== undefined;
+    userProfile.is_sub_dsa = isSubDsa;
+
     const [
-      dsaProfile,
       loanSummary,
       loanCases,
       payments,
@@ -708,35 +738,6 @@ router.get("/dsa", requireAuth, async (req, res) => {
       notifications,
       smAsmDetails,
     ] = await Promise.all([
-
-      // ==================================================
-      // DSA PROFILE
-      // ==================================================
-
-      db.promise().query(
-        `
-        SELECT
-          d.id,
-          d.dsa_code,
-          d.referral_code,
-          d.firm_name,
-          d.name,
-          d.email,
-          d.mobile,
-          d.role,
-          d.status,
-          d.company_id,
-          d.company_name,
-          d.location_id,
-          d.location,
-          d.created_at,
-          d.updated_at
-        FROM dsa_users d
-        WHERE d.id=?
-        LIMIT 1
-        `,
-        [dsaId]
-      ),
 
       // ==================================================
       // LOAN SUMMARY
@@ -752,7 +753,7 @@ router.get("/dsa", requireAuth, async (req, res) => {
           SUM(status='DRAFT') AS draft,
           COALESCE(SUM(sanction_amount),0) AS totalSanctionAmount
         FROM loan_cases
-        WHERE dsa_id=?
+        WHERE ${isSubDsa ? "sub_dsa_id=?" : "dsa_id=?"}
         `,
         [dsaId]
       ),
@@ -831,7 +832,7 @@ router.get("/dsa", requireAuth, async (req, res) => {
         ) pay
         ON lc.id=pay.case_id
 
-        WHERE lc.dsa_id=?
+        WHERE ${isSubDsa ? "lc.sub_dsa_id=?" : "lc.dsa_id=?"}
 
         ORDER BY lc.created_at DESC
         `,
@@ -856,7 +857,7 @@ router.get("/dsa", requireAuth, async (req, res) => {
         INNER JOIN loan_cases lc
         ON p.case_id=lc.id
 
-        WHERE lc.dsa_id=?
+        WHERE ${isSubDsa ? "lc.sub_dsa_id=?" : "lc.dsa_id=?"}
 
         ORDER BY p.created_at DESC
         `,
@@ -881,7 +882,7 @@ router.get("/dsa", requireAuth, async (req, res) => {
         INNER JOIN loan_cases lc
         ON ld.case_id=lc.id
 
-        WHERE lc.dsa_id=?
+        WHERE ${isSubDsa ? "lc.sub_dsa_id=?" : "lc.dsa_id=?"}
 
         ORDER BY ld.created_at DESC
         `,
@@ -923,7 +924,7 @@ router.get("/dsa", requireAuth, async (req, res) => {
         INNER JOIN loan_cases lc
         ON s.case_id=lc.id
 
-        WHERE lc.dsa_id=?
+        WHERE ${isSubDsa ? "lc.sub_dsa_id=?" : "lc.dsa_id=?"}
 
         ORDER BY s.case_id DESC
         `,
@@ -955,16 +956,58 @@ router.get("/dsa", requireAuth, async (req, res) => {
 
       const baseAmount = disbAmt > 0 ? disbAmt : sanctionAmt;
       const paymentOption = String(p?.payment_option || lc.payment_option || "");
-      const paymentPct =
+
+      // Check if this case was introduced by a Sub-DSA
+      const hasSubDsa = !isSubDsa && Boolean(lc.sub_dsa_id || p?.sub_dsa_id);
+
+      // Base platform slab rate and gross amount
+      const basePlatformPct =
         p?.payment_percentage !== undefined && p?.payment_percentage !== null
           ? Number(p.payment_percentage)
           : (paymentOption.includes("48") || paymentOption.includes("SPOT") ? 0.85 : 0.90);
 
+      const grossAmt =
+        p?.payment_amount && Number(p.payment_amount) > 0
+          ? Number(p.payment_amount)
+          : (baseAmount > 0 ? Math.round((baseAmount * basePlatformPct) / 100) : 0);
+
+      // Sub-DSA rate and amount if present
+      const subDsaPct =
+        p?.sub_dsa_percentage !== null && p?.sub_dsa_percentage !== undefined
+          ? Number(p.sub_dsa_percentage)
+          : null;
+
+      const subDsaAmt =
+        p?.sub_dsa_amount !== null && p?.sub_dsa_amount !== undefined
+          ? Number(p.sub_dsa_amount)
+          : (baseAmount > 0 && subDsaPct !== null ? Math.round(((baseAmount * subDsaPct) / 100) * 100) / 100 : null);
+
+      // Master DSA override rate and amount
+      const overridePct =
+        p?.dsa_override_percentage !== null && p?.dsa_override_percentage !== undefined
+          ? Number(p.dsa_override_percentage)
+          : (subDsaPct !== null ? Math.round((basePlatformPct - subDsaPct) * 100) / 100 : null);
+
+      const overrideAmt =
+        p?.dsa_override_amount !== null && p?.dsa_override_amount !== undefined
+          ? Number(p.dsa_override_amount)
+          : (subDsaAmt !== null ? Math.round((grossAmt - subDsaAmt) * 100) / 100 : null);
+
       let comm = 0;
-      if (p?.payment_amount && Number(p.payment_amount) > 0) {
-        comm = Number(p.payment_amount);
-      } else if (baseAmount > 0) {
-        comm = Math.round((baseAmount * paymentPct) / 100);
+      let effectiveRate = basePlatformPct;
+
+      if (isSubDsa) {
+        // Sub-DSA gets their agreed referral share
+        effectiveRate = subDsaPct;
+        comm = subDsaAmt !== null ? subDsaAmt : (baseAmount > 0 && subDsaPct !== null ? Math.round(((baseAmount * subDsaPct) / 100) * 100) / 100 : 0);
+      } else if (hasSubDsa) {
+        // Master DSA for Sub-DSA case: earns their net override margin
+        effectiveRate = overridePct !== null ? overridePct : basePlatformPct;
+        comm = overrideAmt !== null ? overrideAmt : grossAmt;
+      } else {
+        // Direct DSA case: Master DSA earns full direct commission
+        effectiveRate = basePlatformPct;
+        comm = grossAmt;
       }
 
       const status = String(lc.status || "").toUpperCase().trim();
@@ -977,12 +1020,28 @@ router.get("/dsa", requireAuth, async (req, res) => {
         pendingCommission += comm;
       }
 
+      const defaultPlanLabel = isSubDsa
+        ? (paymentOption.includes("48") || paymentOption.includes("SPOT") ? "Spot 48h Settlement" : "Standard 5-Days Settlement")
+        : (basePlatformPct === 0.85 ? "Spot 48h (0.85%)" : "After 5 Days (0.90%)");
+
+      const finalPaymentOption = isSubDsa
+        ? (paymentOption.includes("48") || paymentOption.includes("SPOT") ? "Spot 48h Settlement" : "Standard 5-Days Settlement")
+        : (p?.payment_option || defaultPlanLabel);
+
       return {
         ...lc,
-        payment_amount: p?.payment_amount || comm,
-        payment_option: p?.payment_option || (paymentPct === 0.85 ? "Spot 48h (0.85%)" : "After 5 Days (0.90%)"),
-        payment_percentage: paymentPct,
-        commission_rate: paymentPct,
+        has_sub_dsa: hasSubDsa,
+        gross_payment_amount: grossAmt,
+        gross_payment_percentage: basePlatformPct,
+        sub_dsa_id: lc.sub_dsa_id || p?.sub_dsa_id || null,
+        sub_dsa_percentage: subDsaPct,
+        sub_dsa_amount: subDsaAmt,
+        dsa_override_percentage: overridePct,
+        dsa_override_amount: overrideAmt,
+        payment_amount: comm,
+        payment_option: finalPaymentOption,
+        payment_percentage: effectiveRate,
+        commission_rate: effectiveRate,
         commission_amount: comm,
       };
     });
@@ -993,13 +1052,13 @@ router.get("/dsa", requireAuth, async (req, res) => {
 
     const payoutSettlement = {
       spot48h: {
-        rate: "0.85%",
+        rate: isSubDsa ? "Partner Rate" : "0.85%",
         casesCount: 0,
         disbursedAmount: 0,
         commissionEarned: 0,
       },
       standard5Days: {
-        rate: "0.90%",
+        rate: isSubDsa ? "Partner Rate" : "0.90%",
         casesCount: 0,
         disbursedAmount: 0,
         commissionEarned: 0,
@@ -1054,11 +1113,42 @@ router.get("/dsa", requireAuth, async (req, res) => {
     // FINAL RESPONSE
     // ==================================================
 
+    // For Sub-DSA: sanitize payments array so no master DSA override or admin corporate earnings are leaked
+    const sanitizedPayments = isSubDsa
+      ? (payments[0] || []).map((p) => {
+          const isSpot =
+            String(p.payment_option || "").includes("48") ||
+            String(p.payment_option || "").toUpperCase().includes("SPOT");
+          return {
+            id: p.id,
+            case_id: p.case_id,
+            case_number: p.case_number,
+            customer_name: p.customer_name,
+            loan_amount: p.loan_amount,
+            payment_option: isSpot ? "Spot 48h Settlement" : "Standard 5-Days Settlement",
+            payment_percentage:
+              p.sub_dsa_percentage !== null && p.sub_dsa_percentage !== undefined
+                ? Number(p.sub_dsa_percentage)
+                : null,
+            payment_amount:
+              p.sub_dsa_amount !== null && p.sub_dsa_amount !== undefined
+                ? Number(p.sub_dsa_amount)
+                : null,
+            sub_dsa_id: p.sub_dsa_id,
+            sub_dsa_percentage: p.sub_dsa_percentage,
+            sub_dsa_amount: p.sub_dsa_amount,
+            sub_dsa_payout_status: p.sub_dsa_payout_status,
+            created_at: p.created_at,
+            updated_at: p.updated_at,
+          };
+        })
+      : payments[0];
+
     return res.status(200).json({
       status: true,
 
       data: {
-        profile: dsaProfile[0][0] || null,
+        profile: userProfile || null,
 
         summary: {
           loanCases: loanSummary[0][0].loanCases || 0,
@@ -1078,7 +1168,7 @@ router.get("/dsa", requireAuth, async (req, res) => {
         bankPerformance,
 
         loanCases: enrichedLoanCases,
-        payments: payments[0],
+        payments: sanitizedPayments,
         disbursements: disbursements[0],
         notifications: notifications[0],
         smAsmDetails: smAsmDetails[0],
