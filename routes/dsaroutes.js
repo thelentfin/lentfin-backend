@@ -4340,9 +4340,11 @@ router.get(
           SUM(CASE WHEN lc.status IN ('ACCEPTED', 'DISBURSED') THEN 1 ELSE 0 END) AS approved_cases,
           SUM(CASE WHEN lc.status IN ('SUBMITTED', 'DRAFT') THEN 1 ELSE 0 END) AS pending_cases,
           SUM(CASE WHEN lc.status = 'REJECTED' THEN 1 ELSE 0 END) AS rejected_cases,
+          COALESCE(SUM(CASE WHEN lc.status IN ('ACCEPTED', 'DISBURSED') THEN COALESCE(lcd.disbursement_amount, lc.sanction_amount) ELSE 0 END), 0) AS total_disbursed_amount,
           COALESCE(SUM(CASE WHEN lc.status IN ('ACCEPTED', 'DISBURSED') THEN lc.sanction_amount ELSE 0 END), 0) AS total_sanction_amount
         FROM dsa_users u
-        LEFT JOIN loan_cases lc ON lc.dsa_id = u.id
+        LEFT JOIN loan_cases lc ON lc.sub_dsa_id = u.id
+        LEFT JOIN loan_case_disbursements lcd ON lcd.case_id = lc.id
         WHERE u.referred_by_dsa_id = ?
         GROUP BY u.id
         ORDER BY u.id DESC
@@ -4359,6 +4361,7 @@ router.get(
           acc.approvedCases += Number(p.approved_cases || 0);
           acc.pendingCases += Number(p.pending_cases || 0);
           acc.rejectedCases += Number(p.rejected_cases || 0);
+          acc.totalDisbursedAmount += Number(p.total_disbursed_amount || 0);
           acc.totalSanctionAmount += Number(p.total_sanction_amount || 0);
           return acc;
         },
@@ -4369,6 +4372,7 @@ router.get(
           approvedCases: 0,
           pendingCases: 0,
           rejectedCases: 0,
+          totalDisbursedAmount: 0,
           totalSanctionAmount: 0,
         }
       );
@@ -4430,14 +4434,20 @@ router.get(
           lc.case_number,
           lc.customer_name,
           lc.sanction_amount,
+          COALESCE(lcd.disbursement_amount, lc.sanction_amount) AS disbursement_amount,
           lc.status,
           lc.created_at,
           prod.product_name,
-          b.bank_name
+          b.bank_name,
+          COALESCE(lcp.sub_dsa_amount, 0) AS sub_dsa_commission_amount,
+          lcp.sub_dsa_percentage,
+          lcp.sub_dsa_payout_status
         FROM loan_cases lc
         LEFT JOIN products prod ON lc.product_id = prod.id
         LEFT JOIN banks b ON lc.bank_id = b.id
-        WHERE lc.dsa_id = ?
+        LEFT JOIN loan_case_payments lcp ON lcp.case_id = lc.id
+        LEFT JOIN loan_case_disbursements lcd ON lcd.case_id = lc.id
+        WHERE lc.sub_dsa_id = ?
         ORDER BY lc.id DESC
       `;
 
