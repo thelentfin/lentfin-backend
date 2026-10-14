@@ -12,6 +12,13 @@ const loanCaseSchema = z.object({
     })
     .int()
     .positive("Company is required"),
+
+  sub_dsa_id: z.coerce
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .nullable(),
   // ====================================================
   // BANK ID
   // ====================================================

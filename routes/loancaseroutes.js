@@ -181,6 +181,7 @@ router.post(
         remarks,
         product_id,
         payout_option_id,
+        sub_dsa_id,
       } = req.body;
 
       // ==================================================
@@ -211,6 +212,7 @@ router.post(
        loan_account_number,
        sanction_amount,
        remarks,
+       sub_dsa_id,
      });
 
       // ==================================================
@@ -244,6 +246,7 @@ router.post(
       loan_account_number: validatedLoanAccountNumber,
       sanction_amount: validatedSanctionAmount,
       remarks: validatedRemarks,
+      sub_dsa_id: validatedSubDsaId,
     } = validatedData;
 
       // ==================================================
@@ -273,7 +276,8 @@ router.post(
             name,
             email,
             status,
-            company_id
+            company_id,
+            referred_by_dsa_id
           FROM dsa_users
           WHERE id = ?
           LIMIT 1
@@ -290,7 +294,7 @@ router.post(
 
       // ==================================================
       // STEP 9
-      // CHECK DSA ACTIVE
+      // CHECK DSA ACTIVE & PERMISSIONS
       // ==================================================
 
       if (String(dsaResult[0].status).toLowerCase() !== "active") {
@@ -298,6 +302,30 @@ router.post(
           status: false,
           message: "DSA account is inactive",
         });
+      }
+
+      // Referral / Sub-DSA users are view-only and cannot create loan applications
+      if (dsaResult[0].referred_by_dsa_id !== null) {
+        return res.status(403).json({
+          status: false,
+          message: "Referral agents are view-only and cannot submit loan applications directly. Please provide customer leads to your Master DSA.",
+        });
+      }
+
+      // Validate sub_dsa_id belongs to this Master DSA if provided
+      let parsedSubDsaId = null;
+      if (validatedSubDsaId) {
+        const subDsaCheck = await query(
+          `SELECT id FROM dsa_users WHERE id = ? AND referred_by_dsa_id = ? AND status = 'ACTIVE' LIMIT 1`,
+          [validatedSubDsaId, dsaId]
+        );
+        if (subDsaCheck.length === 0) {
+          return res.status(400).json({
+            status: false,
+            message: "Selected referral agent is invalid or not active under your network.",
+          });
+        }
+        parsedSubDsaId = validatedSubDsaId;
       }
       // ==================================================
       // STEP 9.1
@@ -482,6 +510,7 @@ router.post(
           INSERT INTO loan_cases (
     case_number,
     dsa_id,
+    sub_dsa_id,
     company_id,
     bank_id,
     product_id,
@@ -495,11 +524,12 @@ router.post(
     status,
     remarks
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           temporaryCaseNumber,
           dsaId,
+          parsedSubDsaId,
           companyId,
           validatedBankId,
           parsedProductId,
@@ -803,7 +833,7 @@ router.get(
 
       const dsaResult = await query(
         `
-          SELECT id, status
+          SELECT id, status, referred_by_dsa_id
           FROM dsa_users
           WHERE id = ?
           LIMIT 1
@@ -827,8 +857,10 @@ router.get(
 
       // ==================================================
       // STEP 3
-      // GET CASES
+      // GET CASES (Filtered for Sub-DSA vs Master DSA)
       // ==================================================
+
+      const isSubDsa = dsaResult[0].referred_by_dsa_id !== null;
 
       const cases = await query(
         `
@@ -836,6 +868,9 @@ router.get(
   lc.id,
   lc.case_number,
   lc.dsa_id,
+  lc.sub_dsa_id,
+  sub_dsa.name AS sub_dsa_name,
+  sub_dsa.dsa_code AS sub_dsa_code,
   lc.company_id,
   c.company_name,
   lc.bank_id,
@@ -864,7 +899,10 @@ ON lc.company_id = c.id
 INNER JOIN banks b
 ON lc.bank_id = b.id
 
-WHERE lc.dsa_id = ?
+LEFT JOIN dsa_users sub_dsa
+ON lc.sub_dsa_id = sub_dsa.id
+
+WHERE ${isSubDsa ? "lc.sub_dsa_id = ?" : "lc.dsa_id = ?"}
 
 ORDER BY lc.id DESC;
         `,
@@ -1056,7 +1094,17 @@ c.status AS company_status,
           dsa.dsa_code,
           dsa.name AS dsa_name,
           dsa.email AS dsa_email,
+          dsa.mobile AS dsa_mobile,
           dsa.status AS dsa_status,
+
+          /* ============================================
+             SUB-DSA DETAILS
+             ============================================ */
+          sub_dsa.id AS sub_dsa_id,
+          sub_dsa.dsa_code AS sub_dsa_code,
+          sub_dsa.name AS sub_dsa_name,
+          sub_dsa.mobile AS sub_dsa_mobile,
+          sub_dsa.email AS sub_dsa_email,
 
 
           /* ============================================
@@ -1104,6 +1152,13 @@ ON lc.company_id = c.id
         INNER JOIN dsa_users dsa
           ON lc.dsa_id = dsa.id
 
+        /* ============================================
+           SUB-DSA
+           ============================================ */
+
+        LEFT JOIN dsa_users sub_dsa
+          ON lc.sub_dsa_id = sub_dsa.id
+
 
         /* ============================================
            LATEST LOAN CASE DOCUMENT
@@ -1141,8 +1196,19 @@ ON lc.company_id = c.id
             dsa_code: row.dsa_code,
             name: row.dsa_name,
             email: row.dsa_email,
+            mobile: row.dsa_mobile,
             status: row.dsa_status,
           },
+
+          sub_dsa: row.sub_dsa_id
+            ? {
+                id: row.sub_dsa_id,
+                dsa_code: row.sub_dsa_code,
+                name: row.sub_dsa_name,
+                mobile: row.sub_dsa_mobile,
+                email: row.sub_dsa_email,
+              }
+            : null,
 
           company: {
             id: row.company_id,
@@ -1481,6 +1547,7 @@ router.put(
     id,
     status,
     dsa_id,
+    sub_dsa_id,
     company_id
 FROM loan_cases
 WHERE id=?
@@ -1526,6 +1593,19 @@ LIMIT 1
           case_id,
         ],
       );
+
+      // If ACCEPTED, set Sub-DSA payout status to PAID in loan_case_payments
+      if (status === "ACCEPTED") {
+        await db.promise().execute(
+          `
+          UPDATE loan_case_payments
+          SET sub_dsa_payout_status = 'PAID'
+          WHERE case_id = ? AND sub_dsa_id IS NOT NULL
+          `,
+          [case_id]
+        );
+      }
+
       // ==================================================
       // SOCKET.IO EVENT
       // ==================================================
@@ -1539,12 +1619,22 @@ LIMIT 1
         status,
       });
 
-      // Particular DSA Dashboard
+      // Master DSA Dashboard
       io.to(`dsa_${caseResult[0].dsa_id}`).emit("dashboardUpdated", {
         type: "loanStatusChanged",
         caseId: Number(case_id),
         status,
       });
+
+      // Sub-DSA Dashboard (if applicable)
+      if (caseResult[0].sub_dsa_id) {
+        io.to(`dsa_${caseResult[0].sub_dsa_id}`).emit("dashboardUpdated", {
+          type: "loanStatusChanged",
+          caseId: Number(case_id),
+          status,
+          subDsaPayoutStatus: status === "ACCEPTED" ? "PAID" : "PENDING",
+        });
+      }
 
       // ==========================================
       // RESPONSE

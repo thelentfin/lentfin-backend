@@ -118,7 +118,7 @@ router.post("/create", requireAuth, (req, res) => {
           lc.status,
           lc.dsa_id,
 
-          d.company_id,
+          COALESCE(lc.company_id, d.company_id, 1) AS company_id,
           d.name,
           d.email,
           d.mobile
@@ -212,7 +212,7 @@ VALUES(?,?,?,?,?,?,'OPEN',?)
         [
           case_id,
           dsaId,
-          loanCase.company_id,
+          loanCase.company_id || 1,
           category,
           issue_type,
           description,
@@ -449,7 +449,7 @@ router.get("/my-tickets", requireAuth, async (req, res) => {
         ON st.dsa_id = d.id
 
       LEFT JOIN companies c
-        ON d.company_id = c.id
+        ON COALESCE(st.company_id, d.company_id) = c.id
 
       WHERE st.dsa_id = ?
 
@@ -596,7 +596,7 @@ router.get("/all", requireAuth, async (req, res) => {
         ON st.dsa_id = d.id
 
       LEFT JOIN companies c
-        ON d.company_id = c.id
+        ON COALESCE(st.company_id, d.company_id) = c.id
 
       LEFT JOIN loan_cases lc
         ON st.case_id = lc.id
@@ -761,7 +761,7 @@ router.get("/my-ticket/:ticketId", requireAuth, async (req, res) => {
         ON st.dsa_id = d.id
 
       LEFT JOIN companies c
-        ON d.company_id = c.id
+        ON COALESCE(st.company_id, d.company_id) = c.id
 
       WHERE st.id = ?
         AND st.dsa_id = ?
