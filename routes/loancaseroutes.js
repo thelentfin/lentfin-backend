@@ -1094,6 +1094,7 @@ c.status AS company_status,
           dsa.dsa_code,
           dsa.name AS dsa_name,
           dsa.email AS dsa_email,
+          dsa.mobile AS dsa_mobile,
           dsa.status AS dsa_status,
 
           /* ============================================
@@ -1195,6 +1196,7 @@ ON lc.company_id = c.id
             dsa_code: row.dsa_code,
             name: row.dsa_name,
             email: row.dsa_email,
+            mobile: row.dsa_mobile,
             status: row.dsa_status,
           },
 

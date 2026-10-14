@@ -1369,6 +1369,11 @@ router.get(
           r.name,
            r.firm_name,
   r.referral_code,
+          r.referred_by_code,
+          r.referred_by_dsa_id,
+          ref.name AS referrer_dsa_name,
+          ref.firm_name AS referrer_firm_name,
+          ref.dsa_code AS referrer_dsa_code,
           r.email,
           r.mobile,
           r.status,
@@ -1389,6 +1394,9 @@ r.msme_number,
 
         LEFT JOIN locations l
           ON r.location_id = l.id
+
+        LEFT JOIN dsa_users ref
+          ON r.referred_by_dsa_id = ref.id
 
         WHERE r.status = 'PENDING'
 
@@ -1618,7 +1626,11 @@ router.get(
 
           c.company_name AS master_company_name,
 
-          l.location_name AS master_location_name
+          l.location_name AS master_location_name,
+
+          ref.name AS referrer_dsa_name,
+          ref.firm_name AS referrer_firm_name,
+          ref.dsa_code AS referrer_dsa_code
 
         FROM dsa_signup_requests r
 
@@ -1627,6 +1639,9 @@ router.get(
 
         LEFT JOIN locations l
           ON r.location_id = l.id
+
+        LEFT JOIN dsa_users ref
+          ON r.referred_by_dsa_id = ref.id
 
         WHERE r.id = ?
       `;
@@ -3891,6 +3906,13 @@ router.get("/users", authenticateAndAuthorize(), async (req, res) => {
           -- DSA LOCATION
           d.dsa_location,
 
+          -- REFERRER DETAILS
+          d.referred_by_code,
+          d.referred_by_dsa_id,
+          ref.name AS referrer_dsa_name,
+          ref.firm_name AS referrer_firm_name,
+          ref.dsa_code AS referrer_dsa_code,
+
           -- BASIC DETAILS
           d.name,
           d.firm_name,
@@ -3936,6 +3958,9 @@ d.referral_code,
 
         LEFT JOIN locations l
           ON d.location_id = l.id
+
+        LEFT JOIN dsa_users ref
+          ON d.referred_by_dsa_id = ref.id
 
         WHERE d.role = 'DSA'
 
