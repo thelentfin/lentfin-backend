@@ -205,6 +205,10 @@ router.get("/admin", requireAuth, async (req, res) => {
           lc.case_number,
           lc.dsa_id,
           d.name AS dsa_name,
+          d.dsa_code,
+          lc.sub_dsa_id,
+          sub_dsa.name AS sub_dsa_name,
+          sub_dsa.dsa_code AS sub_dsa_code,
 
           lc.company_id,
           c.company_name,
@@ -219,6 +223,7 @@ router.get("/admin", requireAuth, async (req, res) => {
           lc.loan_account_number,
 
           lc.sanction_amount,
+          lc.is_car_loan,
           lc.product_id,
           prod.product_name,
           lc.payout_option_id,
@@ -257,12 +262,22 @@ router.get("/admin", requireAuth, async (req, res) => {
           COALESCE(pay.total_paid,0) AS total_paid,
 
           (lc.sanction_amount-COALESCE(pay.total_paid,0))
-          AS remaining_amount
+          AS remaining_amount,
+
+          cld.banker_name,
+          cld.banker_mobile,
+          cld.car_photos,
+          cld.invoice_copy_url,
+          cld.insurance_copy_url,
+          cld.payment_advice_url
 
         FROM loan_cases lc
 
         LEFT JOIN dsa_users d
           ON lc.dsa_id=d.id
+
+        LEFT JOIN dsa_users sub_dsa
+          ON lc.sub_dsa_id=sub_dsa.id
 
         LEFT JOIN companies c
           ON lc.company_id=c.id
@@ -278,6 +293,9 @@ router.get("/admin", requireAuth, async (req, res) => {
 
         LEFT JOIN loan_case_disbursements ld
           ON lc.id=ld.case_id
+
+        LEFT JOIN car_loan_details cld
+          ON lc.id=cld.case_id
 
         LEFT JOIN loan_case_sm_asm_details sm
           ON lc.id=sm.case_id

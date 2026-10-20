@@ -364,8 +364,8 @@ router.delete(
 // GET /api/admin/products/:productId/banks
 // =========================================================================
 router.get(
-  "/admin/products/:productId/banks",
-  authenticateAndAuthorize("admin"),
+  ["/admin/products/:productId/banks", "/products/:productId/banks"],
+  authenticateAndAuthorize("admin", "DSA", "Corporate DSA", "dsa"),
   async (req, res) => {
     try {
       const { productId } = req.params;

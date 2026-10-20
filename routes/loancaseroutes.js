@@ -71,14 +71,19 @@ const upload = multer({
 });
 
 // ======================================================
-// SINGLE FILE
+// MULTER FIELDS CONFIGURATION
 //
-// Postman / Frontend field name:
-//
-// sanction_letter
+// Supports standard loans (sanction_letter) and
+// Car Loans (car_photos, invoice_copy, insurance_copy, payment_advice)
 // ======================================================
 
-const sanctionLetterUpload = upload.single("sanction_letter");
+const loanCaseUpload = upload.fields([
+  { name: "sanction_letter", maxCount: 1 },
+  { name: "invoice_copy", maxCount: 1 },
+  { name: "insurance_copy", maxCount: 1 },
+  { name: "payment_advice", maxCount: 1 },
+  { name: "car_photos", maxCount: 5 },
+]);
 
 // ======================================================
 // GENERATE CASE NUMBER
@@ -114,7 +119,7 @@ router.post(
   // ====================================================
 
   (req, res, next) => {
-    sanctionLetterUpload(req, res, (err) => {
+    loanCaseUpload(req, res, (err) => {
       // ------------------------------------------------
       // MULTER ERROR
       // ------------------------------------------------
@@ -123,14 +128,14 @@ router.post(
         if (err.code === "LIMIT_FILE_SIZE") {
           return res.status(400).json({
             status: false,
-            message: "Sanction letter must not exceed 5 MB",
+            message: "Uploaded file must not exceed 5 MB",
           });
         }
 
         if (err.code === "LIMIT_UNEXPECTED_FILE") {
           return res.status(400).json({
             status: false,
-            message: "Invalid file field. Use sanction_letter",
+            message: `Unexpected file field: ${err.field || "unknown"}`,
           });
         }
 
@@ -151,6 +156,15 @@ router.post(
         });
       }
 
+      // Preserve req.file for standard loan cases
+      if (
+        req.files &&
+        req.files.sanction_letter &&
+        req.files.sanction_letter.length > 0
+      ) {
+        req.file = req.files.sanction_letter[0];
+      }
+
       next();
     });
   },
@@ -164,8 +178,361 @@ router.post(
     let uploadedCloudinaryFile = null;
     let createdCaseId = null;
 
+    let uploadedCloudinaryFiles = [];
+
     try {
       // ==================================================
+      // CAR LOAN HANDLING
+      // ==================================================
+      const isCarLoan =
+        req.body.is_car_loan === "1" ||
+        req.body.is_car_loan === "true" ||
+        req.body.is_car_loan === true;
+
+      if (isCarLoan) {
+        const {
+          company_id,
+          bank_id,
+          customer_name,
+          mobile_number,
+          banker_name,
+          banker_mobile,
+          remarks,
+          product_id,
+          sub_dsa_id,
+        } = req.body;
+
+        // Validation for Car Loan fields
+        if (!company_id || isNaN(Number(company_id)) || Number(company_id) <= 0) {
+          return res.status(400).json({
+            status: false,
+            message: "Valid corporate company is required",
+          });
+        }
+
+        if (!bank_id || isNaN(Number(bank_id)) || Number(bank_id) <= 0) {
+          return res.status(400).json({
+            status: false,
+            message: "Valid bank selection is required",
+          });
+        }
+
+        if (!customer_name || !customer_name.trim() || customer_name.trim().length < 2) {
+          return res.status(400).json({
+            status: false,
+            message: "Customer full name is required (min 2 characters)",
+          });
+        }
+
+        const indianMobileRegex = /^[6-9]\d{9}$/;
+        if (!mobile_number || !indianMobileRegex.test(mobile_number.trim())) {
+          return res.status(400).json({
+            status: false,
+            message: "Valid 10-digit Indian customer mobile number is required",
+          });
+        }
+
+        if (!banker_name || !banker_name.trim() || banker_name.trim().length < 2) {
+          return res.status(400).json({
+            status: false,
+            message: "Banker / Executive contact name is required",
+          });
+        }
+
+        if (!banker_mobile || !indianMobileRegex.test(banker_mobile.trim())) {
+          return res.status(400).json({
+            status: false,
+            message: "Valid 10-digit Indian banker / executive mobile number is required",
+          });
+        }
+
+        // Validate document files
+        const carPhotosFiles = req.files?.car_photos || [];
+        if (carPhotosFiles.length === 0) {
+          return res.status(400).json({
+            status: false,
+            message: "At least 1 car photo (front photo with number plate) is compulsory",
+          });
+        }
+
+        const invoiceFile = req.files?.invoice_copy?.[0];
+        if (!invoiceFile) {
+          return res.status(400).json({
+            status: false,
+            message: "Vehicle purchase invoice copy is required",
+          });
+        }
+
+        const insuranceFile = req.files?.insurance_copy?.[0];
+        if (!insuranceFile) {
+          return res.status(400).json({
+            status: false,
+            message: "Vehicle insurance policy copy is required",
+          });
+        }
+
+        const adviceFile = req.files?.payment_advice?.[0] || req.files?.sanction_letter?.[0];
+        if (!adviceFile) {
+          return res.status(400).json({
+            status: false,
+            message: "Bank payment advice or sanction letter is required",
+          });
+        }
+
+        // Check DSA
+        const dsaId = req.user.id;
+        if (!dsaId) {
+          return res.status(401).json({
+            status: false,
+            message: "DSA authentication information not found",
+          });
+        }
+
+        const dsaResult = await query(
+          `SELECT id, dsa_code, name, email, status, company_id, referred_by_dsa_id
+           FROM dsa_users WHERE id = ? LIMIT 1`,
+          [dsaId]
+        );
+
+        if (dsaResult.length === 0) {
+          return res.status(404).json({
+            status: false,
+            message: "DSA user not found",
+          });
+        }
+
+        if (String(dsaResult[0].status).toLowerCase() !== "active") {
+          return res.status(403).json({
+            status: false,
+            message: "DSA account is inactive",
+          });
+        }
+
+        if (dsaResult[0].referred_by_dsa_id !== null) {
+          return res.status(403).json({
+            status: false,
+            message: "Referral agents are view-only and cannot submit loan applications directly.",
+          });
+        }
+
+        let parsedSubDsaId = null;
+        if (sub_dsa_id && !isNaN(Number(sub_dsa_id))) {
+          const subDsaCheck = await query(
+            `SELECT id FROM dsa_users WHERE id = ? AND referred_by_dsa_id = ? AND status = 'ACTIVE' LIMIT 1`,
+            [sub_dsa_id, dsaId]
+          );
+          if (subDsaCheck.length === 0) {
+            return res.status(400).json({
+              status: false,
+              message: "Selected referral agent is invalid or not active under your network.",
+            });
+          }
+          parsedSubDsaId = Number(sub_dsa_id);
+        }
+
+        // Check Company
+        const companyId = Number(company_id);
+        const companyResult = await query(
+          `SELECT id, company_name, status FROM companies WHERE id = ? LIMIT 1`,
+          [companyId]
+        );
+        if (companyResult.length === 0) {
+          return res.status(404).json({
+            status: false,
+            message: "Company not found.",
+          });
+        }
+        if (String(companyResult[0].status).toLowerCase() !== "active") {
+          return res.status(400).json({
+            status: false,
+            message: "Selected company is inactive.",
+          });
+        }
+
+        // Check Bank
+        const bankId = Number(bank_id);
+        const bankResult = await query(
+          `SELECT id, bank_name, status FROM banks WHERE id = ? LIMIT 1`,
+          [bankId]
+        );
+        if (bankResult.length === 0) {
+          return res.status(404).json({
+            status: false,
+            message: "Bank not found",
+          });
+        }
+        if (String(bankResult[0].status).toLowerCase() !== "active") {
+          return res.status(400).json({
+            status: false,
+            message: "Selected bank is inactive",
+          });
+        }
+
+        // Generate temporary case number
+        const temporaryCaseNumber = `TEMP-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+        const parsedProductId = product_id && !isNaN(Number(product_id)) ? Number(product_id) : 16;
+
+        // Insert into loan_cases
+        const insertResult = await query(
+          `INSERT INTO loan_cases (
+             case_number, dsa_id, sub_dsa_id, company_id, bank_id,
+             product_id, is_car_loan, customer_name, mobile_number,
+             sanction_amount, status, remarks
+           ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 0.00, 'SUBMITTED', ?)`,
+          [
+            temporaryCaseNumber,
+            dsaId,
+            parsedSubDsaId,
+            companyId,
+            bankId,
+            parsedProductId,
+            customer_name.trim(),
+            mobile_number.trim(),
+            remarks ? remarks.trim() : null,
+          ]
+        );
+
+        createdCaseId = insertResult.insertId;
+        const caseNumber = generateCaseNumber(createdCaseId);
+
+        await query(
+          `UPDATE loan_cases SET case_number = ? WHERE id = ?`,
+          [caseNumber, createdCaseId]
+        );
+
+        // Upload car photos to Cloudinary
+        const carPhotoUrls = [];
+        for (const pFile of carPhotosFiles) {
+          const uploadRes = await uploadToCloudinary(
+            pFile,
+            `lentfin/loan_cases/${caseNumber}/car_photos`
+          );
+          uploadedCloudinaryFiles.push({
+            public_id: uploadRes.public_id,
+            resource_type: uploadRes.resource_type,
+          });
+          carPhotoUrls.push(uploadRes.secure_url || uploadRes.url);
+        }
+
+        // Upload invoice copy
+        const invoiceUploadRes = await uploadToCloudinary(
+          invoiceFile,
+          `lentfin/loan_cases/${caseNumber}/documents`
+        );
+        uploadedCloudinaryFiles.push({
+          public_id: invoiceUploadRes.public_id,
+          resource_type: invoiceUploadRes.resource_type,
+        });
+        const invoiceUrl = invoiceUploadRes.secure_url || invoiceUploadRes.url;
+
+        // Upload insurance copy
+        const insuranceUploadRes = await uploadToCloudinary(
+          insuranceFile,
+          `lentfin/loan_cases/${caseNumber}/documents`
+        );
+        uploadedCloudinaryFiles.push({
+          public_id: insuranceUploadRes.public_id,
+          resource_type: insuranceUploadRes.resource_type,
+        });
+        const insuranceUrl = insuranceUploadRes.secure_url || insuranceUploadRes.url;
+
+        // Upload payment advice
+        const adviceUploadRes = await uploadToCloudinary(
+          adviceFile,
+          `lentfin/loan_cases/${caseNumber}/documents`
+        );
+        uploadedCloudinaryFiles.push({
+          public_id: adviceUploadRes.public_id,
+          resource_type: adviceUploadRes.resource_type,
+        });
+        const paymentAdviceUrl = adviceUploadRes.secure_url || adviceUploadRes.url;
+
+        // Insert into loan_case_documents for backward compatibility
+        const adviceFormat =
+          adviceUploadRes.format ||
+          (adviceFile.originalname ? adviceFile.originalname.split(".").pop().toLowerCase() : "pdf");
+
+        await query(
+          `INSERT INTO loan_case_documents (
+             case_id, document_type, original_name, cloudinary_public_id,
+             cloudinary_url, secure_url, resource_type, file_format, file_size
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            createdCaseId,
+            "PAYMENT_ADVICE",
+            adviceFile.originalname,
+            adviceUploadRes.public_id,
+            adviceUploadRes.url,
+            adviceUploadRes.secure_url,
+            adviceUploadRes.resource_type,
+            adviceFormat,
+            adviceFile.size,
+          ]
+        );
+
+        // Insert child record in car_loan_details table
+        await query(
+          `INSERT INTO car_loan_details (
+             case_id, banker_name, banker_mobile, car_photos,
+             invoice_copy_url, insurance_copy_url, payment_advice_url
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            createdCaseId,
+            banker_name.trim(),
+            banker_mobile.trim(),
+            JSON.stringify(carPhotoUrls),
+            invoiceUrl,
+            insuranceUrl,
+            paymentAdviceUrl,
+          ]
+        );
+
+        // Fetch inserted case
+        const createdCaseResult = await query(
+          `SELECT lc.*, b.bank_name, c.company_name
+           FROM loan_cases lc
+           INNER JOIN banks b ON lc.bank_id = b.id
+           LEFT JOIN companies c ON lc.company_id = c.id
+           WHERE lc.id = ? LIMIT 1`,
+          [createdCaseId]
+        );
+
+        // Emit Socket.IO events for live dashboard refresh
+        try {
+          const io = req.app.get("io");
+          if (io) {
+            io.to("admin").emit("dashboardUpdated", {
+              type: "loanCreated",
+              caseId: createdCaseId,
+            });
+            io.to(`dsa_${dsaId}`).emit("dashboardUpdated", {
+              type: "loanCreated",
+              caseId: createdCaseId,
+            });
+          }
+        } catch (socketErr) {
+          console.error("Socket error on car loan creation:", socketErr);
+        }
+
+        return res.status(201).json({
+          status: true,
+          message: "Car loan application registered successfully",
+          data: {
+            case: createdCaseResult[0],
+            car_loan_details: {
+              banker_name: banker_name.trim(),
+              banker_mobile: banker_mobile.trim(),
+              car_photos: carPhotoUrls,
+              invoice_copy_url: invoiceUrl,
+              insurance_copy_url: insuranceUrl,
+              payment_advice_url: paymentAdviceUrl,
+            },
+          },
+        });
+      }
+
+      // ==================================================
+      // STANDARD LOAN CASE (EXISTING LOGIC)
       // STEP 4
       // GET REQUEST BODY
       // ==================================================
@@ -744,6 +1111,16 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       // CLOUDINARY CLEANUP
       // ==================================================
 
+      if (uploadedCloudinaryFiles && uploadedCloudinaryFiles.length > 0) {
+        for (const file of uploadedCloudinaryFiles) {
+          try {
+            await deleteFromCloudinary(file.public_id, file.resource_type);
+          } catch (deleteError) {
+            console.error("CLOUDINARY CLEANUP ERROR (CAR LOAN):", deleteError);
+          }
+        }
+      }
+
       if (uploadedCloudinaryFile && uploadedCloudinaryFile.public_id) {
         try {
           await deleteFromCloudinary(
@@ -911,12 +1288,13 @@ ORDER BY lc.id DESC;
 
       // ==================================================
       // STEP 4
-      // GET DOCUMENTS
+      // GET DOCUMENTS & CAR LOAN DETAILS
       // ==================================================
 
       const caseIds = cases.map((item) => item.id);
 
       let documents = [];
+      let carLoanMap = {};
 
       if (caseIds.length > 0) {
         documents = await query(
@@ -942,16 +1320,41 @@ ORDER BY lc.id DESC;
           `,
           [caseIds],
         );
+
+        try {
+          const carRows = await query(
+            `SELECT * FROM car_loan_details WHERE case_id IN (?)`,
+            [caseIds]
+          );
+          carRows.forEach((row) => {
+            let parsedPhotos = [];
+            try {
+              parsedPhotos =
+                typeof row.car_photos === "string"
+                  ? JSON.parse(row.car_photos)
+                  : row.car_photos || [];
+            } catch (e) {
+              parsedPhotos = [];
+            }
+            carLoanMap[row.case_id] = {
+              ...row,
+              car_photos: parsedPhotos,
+            };
+          });
+        } catch (e) {
+          console.error("Error fetching car_loan_details in /list:", e);
+        }
       }
 
       // ==================================================
       // STEP 5
-      // ATTACH DOCUMENTS
+      // ATTACH DOCUMENTS & CAR LOAN DETAILS
       // ==================================================
 
       const result = cases.map((loanCase) => ({
         ...loanCase,
-
+        is_car_loan: Boolean(loanCase.is_car_loan || carLoanMap[loanCase.id]),
+        car_loan_details: carLoanMap[loanCase.id] || null,
         documents: documents.filter(
           (document) => document.case_id === loanCase.id,
         ),
@@ -1064,6 +1467,14 @@ bpo.option_label,
 lc.payout_percentage,
 lc.calculated_commission,
 
+lc.is_car_loan,
+cld.banker_name AS car_banker_name,
+cld.banker_mobile AS car_banker_mobile,
+cld.car_photos AS car_photos,
+cld.invoice_copy_url,
+cld.insurance_copy_url,
+cld.payment_advice_url,
+
 lc.status,
 lc.reviewed_by,
 lc.reviewed_at,
@@ -1161,6 +1572,14 @@ ON lc.company_id = c.id
 
 
         /* ============================================
+           CAR LOAN DETAILS
+           ============================================ */
+
+        LEFT JOIN car_loan_details cld
+          ON lc.id = cld.case_id
+
+
+        /* ============================================
            LATEST LOAN CASE DOCUMENT
            ============================================ */
 
@@ -1247,6 +1666,27 @@ ON lc.company_id = c.id
             payout_percentage: row.payout_percentage !== null ? Number(row.payout_percentage) : null,
             calculated_commission: row.calculated_commission !== null ? Number(row.calculated_commission) : null,
 
+            is_car_loan: Boolean(row.is_car_loan || row.car_banker_name),
+            car_loan_details:
+              row.is_car_loan || row.car_banker_name
+                ? {
+                    banker_name: row.car_banker_name,
+                    banker_mobile: row.car_banker_mobile,
+                    car_photos: (() => {
+                      try {
+                        return typeof row.car_photos === "string"
+                          ? JSON.parse(row.car_photos)
+                          : row.car_photos || [];
+                      } catch (e) {
+                        return [];
+                      }
+                    })(),
+                    invoice_copy_url: row.invoice_copy_url,
+                    insurance_copy_url: row.insurance_copy_url,
+                    payment_advice_url: row.payment_advice_url,
+                  }
+                : null,
+
             status: row.status,
             reviewed_by: row.reviewed_by,
             reviewed_at: row.reviewed_at,
@@ -1306,7 +1746,147 @@ ON lc.company_id = c.id
     }
   }
 );
-//commit
+// ======================================================
+// GET ALL CAR LOAN CASES - ADMIN
+// GET /api/loan-case/admin/car-loans
+// ======================================================
+
+router.get(
+  "/admin/car-loans",
+  authenticateAndAuthorize(),
+  async (req, res) => {
+    try {
+      const user = req.user;
+      if (!user) {
+        return res.status(401).json({
+          status: false,
+          message: "Authentication information not found",
+        });
+      }
+
+      const userRole = String(
+        user.role || user.user_role || user.user_type || ""
+      ).toLowerCase();
+
+      if (userRole !== "admin") {
+        return res.status(403).json({
+          status: false,
+          message: "Only admin can access car loan cases",
+        });
+      }
+
+      const rows = await query(
+        `SELECT
+           lc.id,
+           lc.case_number,
+           lc.dsa_id,
+           lc.sub_dsa_id,
+           lc.company_id,
+           lc.bank_id,
+           lc.customer_name,
+           lc.mobile_number,
+           lc.application_number,
+           lc.loan_account_number,
+           lc.sanction_amount,
+           lc.is_car_loan,
+           lc.status,
+           lc.reviewed_by,
+           lc.reviewed_at,
+           lc.reject_reason,
+           lc.remarks,
+           lc.created_at,
+           lc.updated_at,
+           c.company_name,
+           b.bank_name,
+           dsa.dsa_code,
+           dsa.name AS dsa_name,
+           dsa.email AS dsa_email,
+           dsa.mobile AS dsa_mobile,
+           sub_dsa.id AS sub_dsa_id,
+           sub_dsa.dsa_code AS sub_dsa_code,
+           sub_dsa.name AS sub_dsa_name,
+           sub_dsa.mobile AS sub_dsa_mobile,
+           cld.id AS cld_id,
+           cld.banker_name,
+           cld.banker_mobile,
+           cld.car_photos,
+           cld.invoice_copy_url,
+           cld.insurance_copy_url,
+           cld.payment_advice_url
+         FROM loan_cases lc
+         LEFT JOIN car_loan_details cld ON lc.id = cld.case_id
+         INNER JOIN banks b ON lc.bank_id = b.id
+         INNER JOIN dsa_users dsa ON lc.dsa_id = dsa.id
+         LEFT JOIN companies c ON lc.company_id = c.id
+         LEFT JOIN dsa_users sub_dsa ON lc.sub_dsa_id = sub_dsa.id
+         WHERE lc.is_car_loan = 1 OR cld.id IS NOT NULL
+         ORDER BY lc.id DESC`
+      );
+
+      const data = rows.map((row) => ({
+        id: row.id,
+        case_id: row.id,
+        case_number: row.case_number,
+        customer_name: row.customer_name,
+        mobile_number: row.mobile_number,
+        bank_name: row.bank_name,
+        company_name: row.company_name || "—",
+        status: row.status,
+        reviewed_by: row.reviewed_by,
+        reviewed_at: row.reviewed_at,
+        reject_reason: row.reject_reason,
+        remarks: row.remarks,
+        created_at: row.created_at,
+        dsa: {
+          id: row.dsa_id,
+          dsa_code: row.dsa_code,
+          name: row.dsa_name,
+          mobile: row.dsa_mobile,
+          email: row.dsa_email,
+        },
+        sub_dsa: row.sub_dsa_id
+          ? {
+              id: row.sub_dsa_id,
+              dsa_code: row.sub_dsa_code,
+              name: row.sub_dsa_name,
+              mobile: row.sub_dsa_mobile,
+            }
+          : null,
+        car_loan_details: {
+          banker_name: row.banker_name || "—",
+          banker_mobile: row.banker_mobile || "—",
+          car_photos: (() => {
+            try {
+              return typeof row.car_photos === "string"
+                ? JSON.parse(row.car_photos)
+                : row.car_photos || [];
+            } catch (e) {
+              return [];
+            }
+          })(),
+          invoice_copy_url: row.invoice_copy_url || null,
+          insurance_copy_url: row.insurance_copy_url || null,
+          payment_advice_url: row.payment_advice_url || null,
+        },
+      }));
+
+      return res.status(200).json({
+        status: true,
+        message: "All Car Loan cases fetched successfully",
+        total: data.length,
+        data,
+      });
+    } catch (error) {
+      console.error("ADMIN GET CAR LOANS ERROR:", error);
+      return res.status(500).json({
+        status: false,
+        message: "Failed to fetch car loan cases",
+        error: error.message,
+      });
+    }
+  }
+);
+
 // ======================================================
 // GET SINGLE LOAN CASE
 //
@@ -1444,7 +2024,7 @@ ON lc.company_id = c.id
 
       // ==================================================
       // STEP 7
-      // GET DOCUMENTS
+      // GET DOCUMENTS & CAR LOAN DETAILS
       // ==================================================
 
       const documents = await query(
@@ -1471,6 +2051,31 @@ ON lc.company_id = c.id
         [id],
       );
 
+      let carLoanDetails = null;
+      try {
+        const carRows = await query(
+          `SELECT * FROM car_loan_details WHERE case_id = ? LIMIT 1`,
+          [id]
+        );
+        if (carRows.length > 0) {
+          let parsedPhotos = [];
+          try {
+            parsedPhotos =
+              typeof carRows[0].car_photos === "string"
+                ? JSON.parse(carRows[0].car_photos)
+                : carRows[0].car_photos || [];
+          } catch (e) {
+            parsedPhotos = [];
+          }
+          carLoanDetails = {
+            ...carRows[0],
+            car_photos: parsedPhotos,
+          };
+        }
+      } catch (e) {
+        console.error("Error fetching car_loan_details for single case:", e);
+      }
+
       // ==================================================
       // STEP 8
       // RESPONSE
@@ -1480,9 +2085,14 @@ ON lc.company_id = c.id
         status: true,
 
         data: {
-          case: cases[0],
+          case: {
+            ...cases[0],
+            is_car_loan: Boolean(cases[0].is_car_loan || carLoanDetails),
+            car_loan_details: carLoanDetails,
+          },
 
           documents: documents,
+          car_loan_details: carLoanDetails,
         },
       });
     } catch (error) {
