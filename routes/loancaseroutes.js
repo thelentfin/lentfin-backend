@@ -27,6 +27,12 @@ const {
 } = require("../validations/loanValidation");
 
 // ======================================================
+// NOTIFICATIONS
+// ======================================================
+
+const { notifyAllAdmins } = require("../utils/notificationHelper");
+
+// ======================================================
 // DATABASE QUERY HELPER
 // ======================================================
 
@@ -497,7 +503,20 @@ router.post(
           [createdCaseId]
         );
 
-        // Emit Socket.IO events for live dashboard refresh
+        // Notify all admins via database & notification bell
+        try {
+          await notifyAllAdmins({
+            notificationType: "CAR_LOAN_SUBMITTED",
+            title: "Car Loan Application Submitted",
+            message: `${dsaResult[0]?.name || "DSA"} has submitted car loan case ${caseNumber} for customer ${customer_name.trim()}.`,
+            entityType: "CAR_LOAN",
+            entityId: createdCaseId,
+          });
+        } catch (notifErr) {
+          console.error("Failed to notify admins of car loan creation:", notifErr);
+        }
+
+        // Emit Socket.IO events for live dashboard refresh & notification bell
         try {
           const io = req.app.get("io");
           if (io) {
@@ -508,6 +527,15 @@ router.post(
             io.to(`dsa_${dsaId}`).emit("dashboardUpdated", {
               type: "loanCreated",
               caseId: createdCaseId,
+            });
+            io.to("admin").emit("newNotification", {
+              type: "CAR_LOAN_SUBMITTED",
+              caseId: createdCaseId,
+              title: "Car Loan Application Submitted",
+              message: `${dsaResult[0]?.name || "DSA"} has submitted car loan case ${caseNumber} for customer ${customer_name.trim()}.`,
+              notification_type: "CAR_LOAN_SUBMITTED",
+              entity_type: "CAR_LOAN",
+              entity_id: createdCaseId,
             });
           }
         } catch (socketErr) {
