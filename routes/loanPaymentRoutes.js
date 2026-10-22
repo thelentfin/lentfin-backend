@@ -1152,6 +1152,9 @@ router.post(
         received_amount,
         corporate_received_at,
         corporate_rate,
+        payment_mode = "Direct Bank Transfer",
+        utr_number,
+        note,
         mode = "add", // "add" to add tranche, "set_total" to set total received
       } = req.body;
 
@@ -1232,10 +1235,70 @@ router.post(
         adminProfit = Math.round((expectedTotal - dsaPayout) * 100) / 100;
       }
 
-      const currentReceived = parseFloat(p.corporate_received_amount || 0);
-      const newTotalReceived = mode === "set_total"
-        ? Math.round(incomingAmount * 100) / 100
-        : Math.round((currentReceived + incomingAmount) * 100) / 100;
+      const receivedDate = corporate_received_at || new Date().toISOString().slice(0, 10);
+
+      // Record individual entry into loan_case_corporate_inflows
+      if (mode === "set_total") {
+        // Clear past inflows and insert single reconciled entry
+        await query("DELETE FROM loan_case_corporate_inflows WHERE case_id = ?", [case_id]);
+        if (incomingAmount > 0) {
+          await query(
+            `INSERT INTO loan_case_corporate_inflows (case_id, amount, payment_date, payment_mode, utr_number, note)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+              case_id,
+              incomingAmount,
+              receivedDate,
+              payment_mode || "Direct Bank Transfer",
+              utr_number || "—",
+              note || "Reconciled Total",
+            ]
+          );
+        }
+      } else if (incomingAmount > 0) {
+        // First check if there's an existing corporate_received_amount in loan_case_payments with no rows in table
+        const existingInflowRows = await query(
+          "SELECT id FROM loan_case_corporate_inflows WHERE case_id = ? LIMIT 1",
+          [case_id]
+        );
+        const currentDbReceived = parseFloat(p.corporate_received_amount || 0);
+        if (existingInflowRows.length === 0 && currentDbReceived > 0) {
+          // Backfill previous total as first tranche
+          await query(
+            `INSERT INTO loan_case_corporate_inflows (case_id, amount, payment_date, payment_mode, utr_number, note)
+             VALUES (?, ?, ?, 'Direct Bank Transfer', '—', 'Initial Payment')`,
+            [
+              case_id,
+              currentDbReceived,
+              p.corporate_received_at || receivedDate,
+            ]
+          );
+        }
+
+        // Insert new tranche
+        await query(
+          `INSERT INTO loan_case_corporate_inflows (case_id, amount, payment_date, payment_mode, utr_number, note)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            case_id,
+            incomingAmount,
+            receivedDate,
+            payment_mode || "Direct Bank Transfer",
+            utr_number || "—",
+            note || "Payment Received",
+          ]
+        );
+      }
+
+      // Re-sum all inflows from loan_case_corporate_inflows for 100% accuracy
+      const sumResult = await query(
+        `SELECT COALESCE(SUM(amount), 0) AS total_inflow
+         FROM loan_case_corporate_inflows
+         WHERE case_id = ?`,
+        [case_id]
+      );
+
+      const newTotalReceived = Math.round(parseFloat(sumResult[0]?.total_inflow || 0) * 100) / 100;
 
       let newStatus = "PENDING";
       if (newTotalReceived >= expectedTotal && expectedTotal > 0) {
@@ -1243,8 +1306,6 @@ router.post(
       } else if (newTotalReceived > 0) {
         newStatus = "PARTIAL";
       }
-
-      const receivedDate = corporate_received_at || new Date().toISOString().slice(0, 10);
 
       await query(
         `UPDATE loan_case_payments
@@ -1261,6 +1322,12 @@ router.post(
 
       const recoveryBalance = Math.max(0, Math.round((expectedTotal - newTotalReceived) * 100) / 100);
 
+      // Emit live dashboard refresh
+      const io = req.app.get("io");
+      if (io) {
+        io.to("admin").emit("dashboardUpdated", { type: "paymentUpdated", caseId: case_id });
+      }
+
       return res.status(200).json({
         status: true,
         message: "Corporate inflow recorded successfully.",
@@ -1276,6 +1343,272 @@ router.post(
       });
     } catch (err) {
       console.error("RECORD CORPORATE INFLOW ERROR:", err);
+      return res.status(500).json({ status: false, message: err.message });
+    }
+  }
+);
+
+// =========================================================================
+// 9. GET CORPORATE INFLOWS FOR A CASE
+// GET /api/loan-payment/:caseId/corporate-inflows
+// =========================================================================
+router.get(
+  "/:caseId/corporate-inflows",
+  authenticateAndAuthorize("admin"),
+  async (req, res) => {
+    try {
+      const caseId = req.params.caseId;
+      if (!caseId) {
+        return res.status(400).json({ status: false, message: "caseId is required" });
+      }
+
+      const rows = await query(
+        `SELECT id, case_id, amount, payment_date, payment_mode, utr_number, note, created_at
+         FROM loan_case_corporate_inflows
+         WHERE case_id = ?
+         ORDER BY payment_date ASC, id ASC`,
+        [caseId]
+      );
+
+      // Backward compatibility: If no rows in table yet, check loan_case_payments
+      if (rows.length === 0) {
+        const paymentRows = await query(
+          `SELECT corporate_received_amount, corporate_received_at
+           FROM loan_case_payments
+           WHERE case_id = ? LIMIT 1`,
+          [caseId]
+        );
+
+        if (paymentRows.length > 0 && Number(paymentRows[0].corporate_received_amount) > 0) {
+          const recAmt = Number(paymentRows[0].corporate_received_amount);
+          const recDate = paymentRows[0].corporate_received_at || new Date().toISOString().slice(0, 10);
+
+          // Auto-backfill to database
+          const insertRes = await query(
+            `INSERT INTO loan_case_corporate_inflows (case_id, amount, payment_date, payment_mode, utr_number, note)
+             VALUES (?, ?, ?, 'Direct Bank Transfer', '—', 'Initial Payment')`,
+            [caseId, recAmt, recDate]
+          );
+
+          return res.status(200).json({
+            status: true,
+            data: [
+              {
+                id: insertRes.insertId,
+                case_id: Number(caseId),
+                amount: recAmt,
+                payment_date: recDate,
+                payment_mode: "Direct Bank Transfer",
+                utr_number: "—",
+                note: "Initial Payment",
+              },
+            ],
+          });
+        }
+      }
+
+      return res.status(200).json({
+        status: true,
+        data: rows,
+      });
+    } catch (err) {
+      console.error("GET CORPORATE INFLOWS ERROR:", err);
+      return res.status(500).json({ status: false, message: err.message });
+    }
+  }
+);
+
+// =========================================================================
+// 10. UPDATE A SPECIFIC CORPORATE INFLOW ENTRY
+// PUT /api/loan-payment/corporate-inflow/:id
+// =========================================================================
+router.put(
+  "/corporate-inflow/:id",
+  authenticateAndAuthorize("admin"),
+  async (req, res) => {
+    try {
+      const inflowId = req.params.id;
+      const { amount, payment_date, payment_mode, utr_number, note } = req.body;
+
+      if (!inflowId) {
+        return res.status(400).json({ status: false, message: "inflow id is required" });
+      }
+
+      const existingRows = await query(
+        "SELECT * FROM loan_case_corporate_inflows WHERE id = ? LIMIT 1",
+        [inflowId]
+      );
+
+      if (existingRows.length === 0) {
+        return res.status(404).json({ status: false, message: "Inflow entry not found" });
+      }
+
+      const caseId = existingRows[0].case_id;
+      const newAmount = parseFloat(amount);
+      if (isNaN(newAmount) || newAmount <= 0) {
+        return res.status(400).json({ status: false, message: "Valid positive amount is required" });
+      }
+
+      await query(
+        `UPDATE loan_case_corporate_inflows
+         SET amount = ?,
+             payment_date = ?,
+             payment_mode = ?,
+             utr_number = ?,
+             note = ?,
+             updated_at = NOW()
+         WHERE id = ?`,
+        [
+          newAmount,
+          payment_date || existingRows[0].payment_date,
+          payment_mode || existingRows[0].payment_mode,
+          utr_number !== undefined ? utr_number : existingRows[0].utr_number,
+          note !== undefined ? note : existingRows[0].note,
+          inflowId,
+        ]
+      );
+
+      // Re-sum total for this case
+      const sumResult = await query(
+        `SELECT COALESCE(SUM(amount), 0) AS total_inflow
+         FROM loan_case_corporate_inflows
+         WHERE case_id = ?`,
+        [caseId]
+      );
+
+      const newTotalReceived = Math.round(parseFloat(sumResult[0]?.total_inflow || 0) * 100) / 100;
+
+      // Fetch payment record to update status and remaining balance
+      const paymentRows = await query(
+        "SELECT * FROM loan_case_payments WHERE case_id = ? LIMIT 1",
+        [caseId]
+      );
+
+      let expectedTotal = 0;
+      if (paymentRows.length > 0) {
+        expectedTotal = Number(paymentRows[0].corporate_amount || 0);
+      }
+
+      let newStatus = "PENDING";
+      if (newTotalReceived >= expectedTotal && expectedTotal > 0) {
+        newStatus = "RECEIVED";
+      } else if (newTotalReceived > 0) {
+        newStatus = "PARTIAL";
+      }
+
+      await query(
+        `UPDATE loan_case_payments
+         SET corporate_received_amount = ?,
+             corporate_payment_status = ?,
+             updated_at = NOW()
+         WHERE case_id = ?`,
+        [newTotalReceived, newStatus, caseId]
+      );
+
+      // Emit live dashboard refresh
+      const io = req.app.get("io");
+      if (io) {
+        io.to("admin").emit("dashboardUpdated", { type: "paymentUpdated", caseId });
+      }
+
+      return res.status(200).json({
+        status: true,
+        message: "Payment entry updated successfully",
+        data: {
+          case_id: caseId,
+          corporate_received_amount: newTotalReceived,
+          corporate_payment_status: newStatus,
+        },
+      });
+    } catch (err) {
+      console.error("UPDATE CORPORATE INFLOW ERROR:", err);
+      return res.status(500).json({ status: false, message: err.message });
+    }
+  }
+);
+
+// =========================================================================
+// 11. DELETE A SPECIFIC CORPORATE INFLOW ENTRY
+// DELETE /api/loan-payment/corporate-inflow/:id
+// =========================================================================
+router.delete(
+  "/corporate-inflow/:id",
+  authenticateAndAuthorize("admin"),
+  async (req, res) => {
+    try {
+      const inflowId = req.params.id;
+
+      if (!inflowId) {
+        return res.status(400).json({ status: false, message: "inflow id is required" });
+      }
+
+      const existingRows = await query(
+        "SELECT * FROM loan_case_corporate_inflows WHERE id = ? LIMIT 1",
+        [inflowId]
+      );
+
+      if (existingRows.length === 0) {
+        return res.status(404).json({ status: false, message: "Inflow entry not found" });
+      }
+
+      const caseId = existingRows[0].case_id;
+
+      await query("DELETE FROM loan_case_corporate_inflows WHERE id = ?", [inflowId]);
+
+      // Re-sum total for this case
+      const sumResult = await query(
+        `SELECT COALESCE(SUM(amount), 0) AS total_inflow
+         FROM loan_case_corporate_inflows
+         WHERE case_id = ?`,
+        [caseId]
+      );
+
+      const newTotalReceived = Math.round(parseFloat(sumResult[0]?.total_inflow || 0) * 100) / 100;
+
+      // Fetch payment record to update status and remaining balance
+      const paymentRows = await query(
+        "SELECT * FROM loan_case_payments WHERE case_id = ? LIMIT 1",
+        [caseId]
+      );
+
+      let expectedTotal = 0;
+      if (paymentRows.length > 0) {
+        expectedTotal = Number(paymentRows[0].corporate_amount || 0);
+      }
+
+      let newStatus = "PENDING";
+      if (newTotalReceived >= expectedTotal && expectedTotal > 0) {
+        newStatus = "RECEIVED";
+      } else if (newTotalReceived > 0) {
+        newStatus = "PARTIAL";
+      }
+
+      await query(
+        `UPDATE loan_case_payments
+         SET corporate_received_amount = ?,
+             corporate_payment_status = ?,
+             updated_at = NOW()
+         WHERE case_id = ?`,
+        [newTotalReceived, newStatus, caseId]
+      );
+
+      // Emit live dashboard refresh
+      const io = req.app.get("io");
+      if (io) {
+        io.to("admin").emit("dashboardUpdated", { type: "paymentUpdated", caseId });
+      }
+
+      return res.status(200).json({
+        status: true,
+        message: "Payment entry deleted successfully",
+        data: {
+          case_id: caseId,
+          corporate_received_amount: newTotalReceived,
+          corporate_payment_status: newStatus,
+        },
+      });
+    } catch (err) {
+      console.error("DELETE CORPORATE INFLOW ERROR:", err);
       return res.status(500).json({ status: false, message: err.message });
     }
   }

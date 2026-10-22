@@ -494,6 +494,30 @@ router.get("/admin", requireAuth, async (req, res) => {
         }
       }
 
+      // Corporate Inflow & Admin Net Profit Spread Calculation
+      const effectiveRate =
+        p?.corporate_rate !== null && p?.corporate_rate !== undefined && p?.corporate_rate !== ""
+          ? Number(p.corporate_rate)
+          : lc.payout_percentage !== null && lc.payout_percentage !== undefined && lc.payout_percentage !== ""
+          ? Number(lc.payout_percentage)
+          : lc.slab_percentage !== null && lc.slab_percentage !== undefined && lc.slab_percentage !== ""
+          ? Number(lc.slab_percentage)
+          : null;
+
+      const corporateRate = effectiveRate !== null && !isNaN(effectiveRate) ? effectiveRate : null;
+
+      let corporateInflowAmount = 0;
+      if (p?.corporate_amount !== null && p?.corporate_amount !== undefined && Number(p.corporate_amount) > 0) {
+        corporateInflowAmount = Number(p.corporate_amount);
+      } else if (corporateRate !== null && baseAmount > 0) {
+        corporateInflowAmount = Math.round(((baseAmount * corporateRate) / 100) * 100) / 100;
+      }
+
+      let netProfitSpread = 0;
+      if (corporateRate !== null) {
+        netProfitSpread = Math.max(0, Math.round((corporateInflowAmount - comm) * 100) / 100);
+      }
+
       return {
         ...lc,
         payment_amount: p?.payment_amount || comm,
@@ -501,6 +525,9 @@ router.get("/admin", requireAuth, async (req, res) => {
         payment_percentage: paymentPct,
         commission_rate: paymentPct,
         commission_amount: comm,
+        corporate_rate: corporateRate,
+        corporateInflowAmount,
+        netProfitSpread,
       };
     });
 
