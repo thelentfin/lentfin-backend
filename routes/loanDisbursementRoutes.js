@@ -939,6 +939,8 @@ router.get(
           lc.sanction_amount,
           lc.status AS case_status,
           lc.dsa_id,
+          lc.company_id,
+          c.company_name,
           lc.product_id,
           prod.product_name,
           lc.payout_option_id,
@@ -976,6 +978,11 @@ router.get(
           dsa.email AS dsa_email,
           dsa.mobile AS dsa_mobile,
           dsa.status AS dsa_status,
+          dsa.account_holder_name AS dsa_account_holder_name,
+          dsa.account_number AS dsa_account_number,
+          dsa.ifsc_code AS dsa_ifsc_code,
+          dsa.bank_name AS dsa_bank_name,
+          dsa.pan_number AS dsa_pan_number,
 
           /* ============================================
              SUB-DSA / REFERRAL PARTNER DETAILS
@@ -985,6 +992,11 @@ router.get(
           sub_dsa.name AS sub_dsa_name,
           sub_dsa.mobile AS sub_dsa_mobile,
           sub_dsa.email AS sub_dsa_email,
+          sub_dsa.account_holder_name AS sub_dsa_account_holder_name,
+          sub_dsa.account_number AS sub_dsa_account_number,
+          sub_dsa.ifsc_code AS sub_dsa_ifsc_code,
+          sub_dsa.bank_name AS sub_dsa_bank_name,
+          sub_dsa.pan_number AS sub_dsa_pan_number,
 
 
           /* ============================================
@@ -1021,6 +1033,12 @@ router.get(
 
         INNER JOIN banks b
           ON lc.bank_id = b.id
+
+        /* ============================================
+           CORPORATE COMPANY
+           ============================================ */
+        LEFT JOIN companies c
+          ON lc.company_id = c.id
 
         /* ============================================
            PRODUCT & OPTION
@@ -1090,6 +1108,11 @@ router.get(
             email: row.dsa_email,
             mobile: row.dsa_mobile,
             status: row.dsa_status,
+            account_holder_name: row.dsa_account_holder_name || null,
+            account_number: row.dsa_account_number || null,
+            ifsc_code: row.dsa_ifsc_code || null,
+            bank_name: row.dsa_bank_name || null,
+            pan_number: row.dsa_pan_number || null,
           },
 
           // ============================================
@@ -1103,6 +1126,8 @@ router.get(
             sanction_amount: row.sanction_amount,
             status: row.case_status,
             bank: row.bank_name || null,
+            company_id: row.company_id || null,
+            company_name: row.company_name || null,
             product_id: row.product_id || null,
             product_name: row.product_name || null,
             payout_option_id: row.payout_option_id || null,
@@ -1110,6 +1135,8 @@ router.get(
             payout_percentage: row.payout_percentage !== null ? Number(row.payout_percentage) : null,
             calculated_commission: row.calculated_commission !== null ? Number(row.calculated_commission) : null,
           },
+          company_id: row.company_id || null,
+          company_name: row.company_name || null,
 
           // ============================================
           // PHASE 4 DISBURSEMENT
@@ -1141,6 +1168,11 @@ router.get(
                 name: row.sub_dsa_name,
                 mobile: row.sub_dsa_mobile,
                 email: row.sub_dsa_email,
+                account_holder_name: row.sub_dsa_account_holder_name || null,
+                account_number: row.sub_dsa_account_number || null,
+                ifsc_code: row.sub_dsa_ifsc_code || null,
+                bank_name: row.sub_dsa_bank_name || null,
+                pan_number: row.sub_dsa_pan_number || null,
               }
             : null,
 
