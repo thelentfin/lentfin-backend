@@ -9,6 +9,7 @@ const db = require("../db");
 // ======================================================
 
 const authenticateAndAuthorize = require("../middleware/authMiddleware");
+const { logAuditAction } = require("../utils/auditLogger");
 
 // ======================================================
 // NOTIFICATION HELPER
@@ -1328,6 +1329,19 @@ router.post(
         io.to("admin").emit("dashboardUpdated", { type: "paymentUpdated", caseId: case_id });
       }
 
+      // Non-blocking Audit Log
+      logAuditAction({
+        req,
+        actionType: "INFLOW_RECORDED",
+        module: "Settlements & Ledger",
+        entityId: `CASE-${case_id}`,
+        entityName: `Case #${case_id}`,
+        summary: `Recorded corporate inflow of ₹${incomingAmount} for Case #${case_id}.`,
+        details: `Channel: ${payment_mode || "Direct Bank Transfer"} • UTR: ${utr_number || "—"} • Remaining Balance: ₹${recoveryBalance}`,
+        previousValue: p.corporate_received_amount ? `₹${p.corporate_received_amount}` : "₹0.00",
+        newValue: `₹${newTotalReceived}`,
+      });
+
       return res.status(200).json({
         status: true,
         message: "Corporate inflow recorded successfully.",
@@ -1510,6 +1524,19 @@ router.put(
       if (io) {
         io.to("admin").emit("dashboardUpdated", { type: "paymentUpdated", caseId });
       }
+
+      // Non-blocking Audit Log
+      logAuditAction({
+        req,
+        actionType: "INFLOW_UPDATED",
+        module: "Settlements & Ledger",
+        entityId: `CASE-${caseId}`,
+        entityName: `Case #${caseId}`,
+        summary: `Updated corporate payment entry to ₹${newAmount} for Case #${caseId}.`,
+        details: `Channel: ${payment_mode || existingRows[0]?.payment_mode} • UTR: ${utr_number !== undefined ? utr_number : existingRows[0]?.utr_number}`,
+        previousValue: existingRows[0]?.amount ? `₹${existingRows[0].amount}` : "—",
+        newValue: `₹${newAmount}`,
+      });
 
       return res.status(200).json({
         status: true,

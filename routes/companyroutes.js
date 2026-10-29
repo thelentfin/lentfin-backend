@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../db");
+const { logAuditAction } = require("../utils/auditLogger");
 
 // ===========================
 // ADD COMPANY
@@ -97,6 +98,18 @@ VALUES (?,?,?,?,?,?)
         io.to("admin").emit("dashboardUpdated", {
           type: "companyAdded",
           companyId: result.insertId,
+        });
+
+        // Non-blocking Audit Log
+        logAuditAction({
+          req,
+          actionType: "COMPANY_ADDED",
+          module: "Settings",
+          entityId: `CORP-${result.insertId}`,
+          entityName: company_name,
+          summary: `Added new corporate partner: ${company_name}.`,
+          details: `Spot: ${spotPct}% • 5-Days: ${fiveDaysPct}% • Standard: ${standardDays} Days`,
+          newValue: company_name,
         });
 
         return res.json({
@@ -238,6 +251,18 @@ router.put("/update-company/:id", (req, res) => {
         companyId: Number(id),
       });
 
+      // Non-blocking Audit Log
+      logAuditAction({
+        req,
+        actionType: "COMPANY_UPDATED",
+        module: "Settings",
+        entityId: `CORP-${id}`,
+        entityName: company_name || `Company #${id}`,
+        summary: `Updated corporate partner details for ${company_name || `Company #${id}`}.`,
+        details: status ? `Status: ${status}` : undefined,
+        newValue: status || company_name || "Updated",
+      });
+
       return res.json({
         status: true,
         message: "Company Updated",
@@ -270,6 +295,15 @@ router.delete("/delete-company/:id", (req, res) => {
     io.to("admin").emit("dashboardUpdated", {
       type: "companyDeleted",
       companyId: Number(id),
+    });
+
+    // Non-blocking Audit Log
+    logAuditAction({
+      req,
+      actionType: "COMPANY_DELETED",
+      module: "Settings",
+      entityId: `CORP-${id}`,
+      summary: `Removed corporate partner #${id}.`,
     });
 
     return res.json({

@@ -3,6 +3,7 @@ const router = express.Router();
 
 const db = require("../db");
 const authenticateAndAuthorize = require("../middleware/authMiddleware");
+const { logAuditAction } = require("../utils/auditLogger");
 
 // ======================================================
 // ADMIN AUTHENTICATION
@@ -65,6 +66,17 @@ router.post("/add", authenticateAndAuthorize(), async (req, res) => {
       `,
       [bankName],
     );
+
+    // Non-blocking Audit Log
+    logAuditAction({
+      req,
+      actionType: "BANK_CREATED",
+      module: "Bank Master",
+      entityId: `BANK-${result.insertId}`,
+      entityName: bankName,
+      summary: `Created new partner bank: ${bankName}.`,
+      newValue: "Active",
+    });
 
     // ==================================================
     // GET CREATED BANK
@@ -314,7 +326,7 @@ router.put("/:id", authenticateAndAuthorize(), async (req, res) => {
 
     const [existingBank] = await db.promise().execute(
       `
-      SELECT id
+      SELECT id, bank_name, status
       FROM banks
       WHERE id = ?
       LIMIT 1
@@ -365,6 +377,20 @@ router.put("/:id", authenticateAndAuthorize(), async (req, res) => {
       `,
       [bankName, status || null, id],
     );
+
+    // Non-blocking Audit Log
+    logAuditAction({
+      req,
+      actionType: "BANK_STATUS_UPDATED",
+      module: "Bank Master",
+      entityId: `BANK-${id}`,
+      entityName: bankName,
+      summary: status && status !== existingBank[0]?.status
+        ? `Changed ${bankName} status from ${existingBank[0]?.status} to ${status}.`
+        : `Updated details for ${bankName}.`,
+      previousValue: existingBank[0]?.status || "—",
+      newValue: status || existingBank[0]?.status || "—",
+    });
 
     // ==================================================
     // GET UPDATED BANK

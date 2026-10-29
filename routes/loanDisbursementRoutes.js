@@ -9,6 +9,7 @@ const multer = require("multer");
 // ======================================================
 
 const authenticateAndAuthorize = require("../middleware/authMiddleware");
+const { logAuditAction } = require("../utils/auditLogger");
 
 // ======================================================
 // CLOUDINARY
@@ -555,6 +556,18 @@ router.post(
         type: "disbursementAdded",
         caseId: validatedCaseId,
         disbursementId: createdDisbursementId,
+      });
+
+      // Non-blocking Audit Log
+      logAuditAction({
+        req,
+        actionType: "CASE_DISBURSED",
+        module: "Customer Applications",
+        entityId: `CASE-${validatedCaseId}`,
+        entityName: `Case #${validatedCaseId}`,
+        summary: `Recorded loan disbursement of ₹${validatedDisbursementAmount} for Case #${validatedCaseId}.`,
+        details: `Disbursed Date: ${validatedDisbursementDate} • Rate: ${validatedRate}% • Tenure: ${validatedTenure}M • Type: ${validatedDisbursementType}`,
+        newValue: `₹${validatedDisbursementAmount}`,
       });
 
       // ==================================================
@@ -1446,6 +1459,21 @@ router.post(
           [caseId]
         );
       }
+
+      // Non-blocking Audit Log
+      logAuditAction({
+        req,
+        actionType: "CASE_DISBURSED",
+        module: "Customer Applications",
+        entityId: `CASE-${caseId}`,
+        entityName: `Case #${caseId}`,
+        summary: isNowFullyDisbursed
+          ? `Recorded final disbursement tranche of ₹${incomingAmount}. Case #${caseId} is now FULLY DISBURSED.`
+          : `Recorded disbursement tranche of ₹${incomingAmount} for Case #${caseId}.`,
+        details: `Total Disbursed: ₹${newTotalDisbursed} / ₹${sanctionAmount} • Tranche #${nextTrancheNum}`,
+        previousValue: `₹${currentDisbursed}`,
+        newValue: `₹${newTotalDisbursed}`,
+      });
 
       return res.status(200).json({
         status: true,

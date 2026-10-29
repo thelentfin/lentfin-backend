@@ -8,6 +8,7 @@ const {
   recordFailedLogin,
   clearFailedLogin,
 } = require("../middleware/rateLimiter");
+const { logAuditAction } = require("../utils/auditLogger");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -164,6 +165,20 @@ router.post("/login", checkLoginCooldown, async (req, res) => {
           expiresIn: "5h",
         },
       );
+
+      // Audit Log: Admin Login
+      logAuditAction({
+        req,
+        actorId: admin.id,
+        actorName: admin.name || (admin.email ? admin.email.split("@")[0] : "Admin"),
+        actorRole: "Admin",
+        actionType: "ADMIN_LOGIN",
+        module: "Authentication",
+        entityId: `USER-${admin.id}`,
+        entityName: admin.email,
+        summary: `Admin ${admin.name || admin.email} logged in successfully.`,
+        newValue: "LOGGED_IN",
+      });
 
       return res.status(200).json({
         status: true,
@@ -337,6 +352,20 @@ router.post("/login", checkLoginCooldown, async (req, res) => {
     // 11. LOGIN SUCCESS
     // ==================================================
 
+    // Audit Log: DSA Partner Login
+    logAuditAction({
+      req,
+      actorId: dsa.id,
+      actorName: dsa.name || (dsa.email ? dsa.email.split("@")[0] : "DSA Partner"),
+      actorRole: "DSA Partner",
+      actionType: "DSA_LOGIN",
+      module: "Authentication",
+      entityId: `DSA-${dsa.id}`,
+      entityName: dsa.email,
+      summary: `DSA Partner ${dsa.name || dsa.email} logged in successfully.`,
+      newValue: "LOGGED_IN",
+    });
+
     return res.status(200).json({
       status: true,
       id: dsa.id,
@@ -423,6 +452,55 @@ router.post("/add", (req, res) => {
       status: false,
       message: "Server Error",
     });
+  }
+});
+
+// ======================================================
+// MANUAL LOGOUT
+// ======================================================
+
+router.post("/logout", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const token = authHeader.split(" ")[1];
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        if (decoded && decoded.id) {
+          const roleLabel =
+            decoded.role === "admin"
+              ? "Admin"
+              : decoded.role === "DSA"
+              ? "DSA Partner"
+              : decoded.role;
+
+          logAuditAction({
+            req,
+            actorId: decoded.id,
+            actorName: decoded.username || decoded.name || roleLabel,
+            actorRole: roleLabel,
+            actionType: "USER_LOGOUT",
+            module: "Authentication",
+            entityId: `USER-${decoded.id}`,
+            summary: `${decoded.username || roleLabel} logged out manually.`,
+            newValue: "LOGGED_OUT",
+          });
+
+          // Cancel any pending socket tab-close timer for this user
+          try {
+            const { cancelDisconnectTimer } = require("../config/socket");
+            if (typeof cancelDisconnectTimer === "function") {
+              cancelDisconnectTimer(`${decoded.role}_${decoded.id}`);
+            }
+          } catch (e) {}
+        }
+      } catch (err) {
+        // Token expired or invalid, continue gracefully
+      }
+    }
+    return res.status(200).json({ status: true, message: "Logged out successfully" });
+  } catch (error) {
+    return res.status(200).json({ status: true, message: "Logged out successfully" });
   }
 });
 

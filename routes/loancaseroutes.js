@@ -9,6 +9,7 @@ const multer = require("multer");
 // ======================================================
 
 const authenticateAndAuthorize = require("../middleware/authMiddleware");
+const { logAuditAction } = require("../utils/auditLogger");
 
 // ======================================================
 // CLOUDINARY
@@ -2263,6 +2264,21 @@ LIMIT 1
           [case_id]
         );
       }
+
+      // Non-blocking Audit Log
+      logAuditAction({
+        req,
+        actionType: status === "ACCEPTED" ? "CASE_APPROVED" : "CASE_REJECTED",
+        module: "Customer Applications",
+        entityId: `CASE-${case_id}`,
+        entityName: `Case #${case_id}`,
+        summary: status === "ACCEPTED"
+          ? `Approved loan case #CASE-${case_id}.`
+          : `Rejected loan case #CASE-${case_id}.${reject_reason ? ` Reason: ${reject_reason}` : ""}`,
+        details: status === "REJECTED" ? reject_reason : "Reviewed and approved by Admin.",
+        previousValue: caseResult[0]?.status || "—",
+        newValue: status,
+      });
 
       // ==================================================
       // SOCKET.IO EVENT
