@@ -192,6 +192,8 @@ router.post("/add", requireAuth, async (req, res) => {
         caseId: Number(case_id),
       });
     }
+
+
     return res.status(201).json({
       status: true,
       message: "SM and ASM details added successfully.",

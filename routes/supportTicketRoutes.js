@@ -7,6 +7,7 @@ const db = require("../db");
 const authenticateAndAuthorize = require("../middleware/authMiddleware");
 const uploadToCloudinary = require("../utils/cloudinaryUpload");
 const { sendEmail } = require("../utils/brevoEmail");
+const { logAuditAction } = require("../utils/auditLogger");
 
 const requireAuth = authenticateAndAuthorize();
 
@@ -961,6 +962,19 @@ router.put("/:ticketId/resolve", requireAuth, async (req, res) => {
         caseId: ticket.case_id,
       });
     }
+
+    // Non-blocking Audit Log
+    logAuditAction({
+      req,
+      actionType: "TICKET_RESOLVED",
+      module: "Support Tickets",
+      entityId: `TCK-${ticket.ticket_number || ticketId}`,
+      entityName: `Ticket #${ticket.ticket_number || ticketId}`,
+      summary: `Resolved support ticket #${ticket.ticket_number || ticketId}. Reason: ${closed_reason.trim()}`,
+      details: closed_reason.trim(),
+      previousValue: ticket.status || "OPEN",
+      newValue: "RESOLVED",
+    });
 
     return res.status(200).json({
       status: true,

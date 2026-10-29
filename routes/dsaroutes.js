@@ -11,6 +11,7 @@ const uploadToCloudinary = require("../utils/cloudinaryUpload");
 const deleteFromCloudinary = require("../utils/cloudinaryDelete");
 const { dsaSignupSchema } = require("../validations/dsaValidation");
 const { sendEmail } = require("../utils/brevoEmail");
+const { logAuditAction } = require("../utils/auditLogger");
 // ======================================================
 // DATABASE QUERY HELPER
 // ======================================================
@@ -2281,6 +2282,19 @@ router.put(
         });
       }
 
+      // Non-blocking Audit Log
+      logAuditAction({
+        req,
+        actionType: "DSA_REJECTED",
+        module: "DSA Management",
+        entityId: `REQ-${id}`,
+        entityName: request.name,
+        summary: `Rejected DSA onboarding application for '${request.name}'. Reason: ${rejection_reason.trim()}`,
+        details: rejection_reason.trim(),
+        previousValue: "PENDING",
+        newValue: "REJECTED",
+      });
+
       // ==================================================
       // 11. SEND REJECTION EMAIL
       // ==================================================
@@ -3443,6 +3457,19 @@ router.put(
           "DSA verified and account created",
         ],
       );
+
+      // Non-blocking Audit Log
+      logAuditAction({
+        req,
+        actionType: "DSA_APPROVED",
+        module: "DSA Management",
+        entityId: `DSA-${dsaId}`,
+        entityName: request.name,
+        summary: `Approved DSA partner onboarding for '${request.name}' (Code: ${dsaCode}).`,
+        details: `Constitution: ${request.constitution_type} • Code Allocated: ${dsaCode}`,
+        previousValue: "PENDING",
+        newValue: "ACTIVE",
+      });
 
       // ==================================================
       // 20. COMMIT TRANSACTION

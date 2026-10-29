@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db");
 const authenticateAndAuthorize = require("../middleware/authMiddleware");
+const { logAuditAction } = require("../utils/auditLogger");
 
 // =========================================================================
 // 1. GET ACTIVE PRODUCTS & OPTIONS FOR A BANK (For Customer Application)
@@ -203,6 +204,17 @@ router.post(
         }
       }
 
+      // Non-blocking Audit Log
+      logAuditAction({
+        req,
+        actionType: "PRODUCT_CREATED",
+        module: "Product Master",
+        entityId: `PROD-${newProductId}`,
+        entityName: trimmedName,
+        summary: `Created new loan product: ${trimmedName}.`,
+        newValue: productStatus,
+      });
+
       return res.status(201).json({
         status: true,
         message: `Product '${trimmedName}' created successfully.`,
@@ -238,6 +250,14 @@ router.put(
 
       if (!id || isNaN(Number(id))) {
         return res.status(400).json({ status: false, message: "Valid product ID is required." });
+      }
+
+      const [existingProd] = await db.promise().query(
+        "SELECT id, product_name, status FROM products WHERE id = ? LIMIT 1",
+        [id]
+      );
+      if (existingProd.length === 0) {
+        return res.status(404).json({ status: false, message: "Product not found." });
       }
 
       const updates = [];
@@ -284,6 +304,20 @@ router.put(
       if (result.affectedRows === 0) {
         return res.status(404).json({ status: false, message: "Product not found." });
       }
+
+      // Non-blocking Audit Log
+      logAuditAction({
+        req,
+        actionType: "PRODUCT_UPDATED",
+        module: "Product Master",
+        entityId: `PROD-${id}`,
+        entityName: product_name ? String(product_name).trim() : existingProd[0]?.product_name,
+        summary: status && status !== existingProd[0]?.status
+          ? `Changed product '${existingProd[0]?.product_name}' status from ${existingProd[0]?.status} to ${status}.`
+          : `Updated details for product '${existingProd[0]?.product_name}'.`,
+        previousValue: existingProd[0]?.status,
+        newValue: status || existingProd[0]?.status,
+      });
 
       return res.status(200).json({
         status: true,
@@ -487,6 +521,11 @@ router.patch(
         });
       }
 
+      const [existingProd] = await db.promise().query(
+        "SELECT id, product_name, status FROM products WHERE id = ? LIMIT 1",
+        [id]
+      );
+
       const [result] = await db.promise().query(
         "UPDATE products SET status = ? WHERE id = ?",
         [status, id]
@@ -495,6 +534,18 @@ router.patch(
       if (result.affectedRows === 0) {
         return res.status(404).json({ status: false, message: "Product not found." });
       }
+
+      // Non-blocking Audit Log
+      logAuditAction({
+        req,
+        actionType: "PRODUCT_STATUS_UPDATED",
+        module: "Product Master",
+        entityId: `PROD-${id}`,
+        entityName: existingProd[0]?.product_name || `Product #${id}`,
+        summary: `Changed product '${existingProd[0]?.product_name || id}' status from ${existingProd[0]?.status || "—"} to ${status}.`,
+        previousValue: existingProd[0]?.status || "—",
+        newValue: status,
+      });
 
       return res.status(200).json({
         status: true,
@@ -613,6 +664,15 @@ router.patch(
         return res.status(400).json({ status: false, message: "Valid option ID is required." });
       }
 
+      const [existingOpt] = await db.promise().query(
+        `SELECT bppo.payout_percentage, bppo.status, bppo.option_label, b.bank_name, p.product_name
+         FROM bank_product_payout_options bppo
+         LEFT JOIN banks b ON bppo.bank_id = b.id
+         LEFT JOIN products p ON bppo.product_id = p.id
+         WHERE bppo.id = ? LIMIT 1`,
+        [id]
+      );
+
       const updates = [];
       const values = [];
 
@@ -662,6 +722,24 @@ router.patch(
 
       if (result.affectedRows === 0) {
         return res.status(404).json({ status: false, message: "Payout option not found." });
+      }
+
+      // Non-blocking Audit Log
+      if (existingOpt.length > 0) {
+        const isRateChanged = payout_percentage !== undefined && Number(payout_percentage) !== Number(existingOpt[0]?.payout_percentage);
+        logAuditAction({
+          req,
+          actionType: isRateChanged ? "BANK_RATE_UPDATED" : "PAYOUT_SLAB_UPDATED",
+          module: "Bank Master",
+          entityId: `OPT-${id}`,
+          entityName: `${existingOpt[0]?.bank_name || "Bank"} - ${existingOpt[0]?.product_name || "Product"}`,
+          summary: isRateChanged
+            ? `Updated bank rate for ${existingOpt[0]?.bank_name} - ${existingOpt[0]?.product_name} (${existingOpt[0]?.option_label || "Standard"}) from ${existingOpt[0]?.payout_percentage}% to ${payout_percentage}%.`
+            : `Updated payout option status to '${status || existingOpt[0]?.status}' for ${existingOpt[0]?.bank_name} - ${existingOpt[0]?.product_name}.`,
+          details: remarks || `Option: ${option_label || existingOpt[0]?.option_label}`,
+          previousValue: `${existingOpt[0]?.payout_percentage}% (${existingOpt[0]?.status})`,
+          newValue: `${payout_percentage !== undefined ? payout_percentage : existingOpt[0]?.payout_percentage}% (${status || existingOpt[0]?.status})`,
+        });
       }
 
       return res.status(200).json({
