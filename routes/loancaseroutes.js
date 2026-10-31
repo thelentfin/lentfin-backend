@@ -932,7 +932,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           parsedOptionId,
           slabPercentage,
           validatedCustomerName,
-          validatedMobileNumber,
+          validatedMobileNumber && String(validatedMobileNumber).trim() !== "" ? String(validatedMobileNumber).trim() : null,
           validatedApplicationNumber ? validatedApplicationNumber : null,
           validatedLoanAccountNumber ? validatedLoanAccountNumber : null,
           validatedSanctionAmount,

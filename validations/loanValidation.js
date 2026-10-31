@@ -53,13 +53,13 @@ const loanCaseSchema = z.object({
   // ====================================================
 
   mobile_number: z
-    .string({
-      required_error: "Mobile number is required",
-      invalid_type_error: "Mobile number must be a string",
-    })
+    .string()
     .trim()
-    .regex(
-      /^[6-9]\d{9}$/,
+    .optional()
+    .nullable()
+    .or(z.literal(""))
+    .refine(
+      (val) => !val || /^[6-9]\d{9}$/.test(val),
       "Mobile number must be a valid 10 digit Indian mobile number",
     ),
 
