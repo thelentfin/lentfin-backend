@@ -212,6 +212,7 @@ router.get("/admin", requireAuth, async (req, res) => {
 
           lc.company_id,
           c.company_name,
+          c.badge_color AS company_badge_color,
 
           lc.bank_id,
           b.bank_name,
@@ -332,6 +333,7 @@ router.get("/admin", requireAuth, async (req, res) => {
           lc.dsa_id,
           lc.company_id,
           c.company_name,
+          c.badge_color AS company_badge_color,
 
           d.name AS dsa_name
 
