@@ -38,6 +38,13 @@ const loanPaymentSchema = z.object({
     required_error: "Payment option is required",
     invalid_type_error: "Payment option must be SPOT_48_HOURS or AFTER_5_DAYS",
   }),
+
+  sub_dsa_percentage: z.coerce
+    .number()
+    .min(0, "Sub-DSA percentage must be at least 0")
+    .max(100, "Sub-DSA percentage cannot exceed 100")
+    .optional()
+    .nullable(),
 });
 
 // ======================================================

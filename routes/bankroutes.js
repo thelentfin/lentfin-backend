@@ -3,6 +3,7 @@ const router = express.Router();
 
 const db = require("../db");
 const authenticateAndAuthorize = require("../middleware/authMiddleware");
+const { logAuditAction } = require("../utils/auditLogger");
 
 // ======================================================
 // ADMIN AUTHENTICATION
@@ -66,6 +67,17 @@ router.post("/add", authenticateAndAuthorize(), async (req, res) => {
       [bankName],
     );
 
+    // Non-blocking Audit Log
+    logAuditAction({
+      req,
+      actionType: "BANK_CREATED",
+      module: "Bank Master",
+      entityId: `BANK-${result.insertId}`,
+      entityName: bankName,
+      summary: `Created new partner bank: ${bankName}.`,
+      newValue: "Active",
+    });
+
     // ==================================================
     // GET CREATED BANK
     // ==================================================
@@ -84,6 +96,44 @@ router.post("/add", authenticateAndAuthorize(), async (req, res) => {
       [result.insertId],
     );
 
+    // ==================================================
+    // AUTO-LINK ACTIVE PRODUCTS TO NEW BANK
+    // ==================================================
+    try {
+      const [activeProducts] = await db.promise().query(
+        "SELECT id FROM products WHERE status = 'Active'"
+      );
+      if (activeProducts.length > 0) {
+        const optionRows = activeProducts.map((p) => [
+          result.insertId,
+          p.id,
+          "Standard",
+          0.00,
+          "Inactive",
+          "Default slab",
+        ]);
+        await db.promise().query(
+          `INSERT IGNORE INTO bank_product_payout_options 
+           (bank_id, product_id, option_label, payout_percentage, status, remarks) 
+           VALUES ?`,
+          [optionRows]
+        );
+      }
+    } catch (optErr) {
+      console.warn("Auto-linking products to new bank warning:", optErr.message);
+    }
+    // ==================================================
+    // SOCKET.IO EVENT
+    // ==================================================
+
+   const io = req.app.get("io");
+
+   if (io) {
+     io.to("admin").emit("dashboardUpdated", {
+       type: "bankAdded",
+       bankId: result.insertId,
+     });
+   }
     return res.status(201).json({
       status: true,
       message: "Bank added successfully.",
@@ -105,14 +155,17 @@ router.post("/add", authenticateAndAuthorize(), async (req, res) => {
 // GET /api/bank/list
 // ======================================================
 
-router.get("/list", authenticateAndAuthorize("DSA","admin"), async (req, res) => {
-  try {
-    // ==================================================
-    // GET ALL BANKS
-    // ==================================================
+router.get(
+  "/list",
+  authenticateAndAuthorize("DSA", "admin", "Corporate DSA"),
+  async (req, res) => {
+    try {
+      // ==================================================
+      // GET ALL BANKS
+      // ==================================================
 
-    const [banks] = await db.promise().execute(
-      `
+      const [banks] = await db.promise().execute(
+        `
       SELECT
         id,
         bank_name,
@@ -121,30 +174,30 @@ router.get("/list", authenticateAndAuthorize("DSA","admin"), async (req, res) =>
         updated_at
       FROM banks
       ORDER BY id DESC
-      `
-    );
+      `,
+      );
 
-    // ==================================================
-    // SUCCESS RESPONSE
-    // ==================================================
+      // ==================================================
+      // SUCCESS RESPONSE
+      // ==================================================
 
-    return res.status(200).json({
-      status: true,
-      message: "Banks fetched successfully.",
-      count: banks.length,
-      data: banks,
-    });
+      return res.status(200).json({
+        status: true,
+        message: "Banks fetched successfully.",
+        count: banks.length,
+        data: banks,
+      });
+    } catch (error) {
+      console.error("GET BANKS ERROR:", error);
 
-  } catch (error) {
-    console.error("GET BANKS ERROR:", error);
-
-    return res.status(500).json({
-      status: false,
-      message: "Failed to fetch banks.",
-      error: error.message,
-    });
-  }
-});
+      return res.status(500).json({
+        status: false,
+        message: "Failed to fetch banks.",
+        error: error.message,
+      });
+    }
+  },
+);
 
 // ======================================================
 // 3. GET SINGLE BANK
@@ -258,11 +311,7 @@ router.put("/:id", authenticateAndAuthorize(), async (req, res) => {
     // VALIDATE STATUS
     // ==================================================
 
-    if (
-      status !== undefined &&
-      status !== "Active" &&
-      status !== "Inactive"
-    ) {
+    if (status !== undefined && status !== "Active" && status !== "Inactive") {
       return res.status(400).json({
         status: false,
         message: "Status must be Active or Inactive.",
@@ -277,7 +326,7 @@ router.put("/:id", authenticateAndAuthorize(), async (req, res) => {
 
     const [existingBank] = await db.promise().execute(
       `
-      SELECT id
+      SELECT id, bank_name, status
       FROM banks
       WHERE id = ?
       LIMIT 1
@@ -329,6 +378,20 @@ router.put("/:id", authenticateAndAuthorize(), async (req, res) => {
       [bankName, status || null, id],
     );
 
+    // Non-blocking Audit Log
+    logAuditAction({
+      req,
+      actionType: "BANK_STATUS_UPDATED",
+      module: "Bank Master",
+      entityId: `BANK-${id}`,
+      entityName: bankName,
+      summary: status && status !== existingBank[0]?.status
+        ? `Changed ${bankName} status from ${existingBank[0]?.status} to ${status}.`
+        : `Updated details for ${bankName}.`,
+      previousValue: existingBank[0]?.status || "—",
+      newValue: status || existingBank[0]?.status || "—",
+    });
+
     // ==================================================
     // GET UPDATED BANK
     // ==================================================
@@ -347,7 +410,16 @@ router.put("/:id", authenticateAndAuthorize(), async (req, res) => {
       `,
       [id],
     );
+    // ==================================================
+    // SOCKET.IO EVENT
+    // ==================================================
 
+    const io = req.app.get("io");
+
+    io.to("admin").emit("dashboardUpdated", {
+      type: "bankUpdated",
+      bankId: Number(id),
+    });
     // ==================================================
     // SUCCESS RESPONSE
     // ==================================================
@@ -357,7 +429,6 @@ router.put("/:id", authenticateAndAuthorize(), async (req, res) => {
       message: "Bank updated successfully.",
       data: updatedBank[0],
     });
-
   } catch (error) {
     console.error("UPDATE BANK ERROR:", error);
 
@@ -422,7 +493,16 @@ router.delete("/:id", authenticateAndAuthorize(), async (req, res) => {
       `,
       [id],
     );
+    // ==================================================
+    // SOCKET.IO EVENT
+    // ==================================================
 
+    const io = req.app.get("io");
+
+    io.to("admin").emit("dashboardUpdated", {
+      type: "bankDeleted",
+      bankId: Number(id),
+    });
     // ==================================================
     // SUCCESS RESPONSE
     // ==================================================
@@ -431,7 +511,6 @@ router.delete("/:id", authenticateAndAuthorize(), async (req, res) => {
       status: true,
       message: "Bank deleted successfully.",
     });
-
   } catch (error) {
     console.error("DELETE BANK ERROR:", error);
 

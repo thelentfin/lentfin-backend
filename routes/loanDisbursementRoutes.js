@@ -9,6 +9,7 @@ const multer = require("multer");
 // ======================================================
 
 const authenticateAndAuthorize = require("../middleware/authMiddleware");
+const { logAuditAction } = require("../utils/auditLogger");
 
 // ======================================================
 // CLOUDINARY
@@ -357,10 +358,10 @@ router.post(
       }
 
       // ==================================================
-      // STEP 14 - PDD LOGIC
+      // STEP 14 - PDD LOGIC (Upload is optional)
       // ==================================================
 
-      if (validatedPddCleared === "YES") {
+      if (req.file) {
         const pddValidation = validatePddDocument(req.file);
 
         if (!pddValidation.success) {
@@ -369,17 +370,6 @@ router.post(
             message: pddValidation.message,
           });
         }
-      }
-
-      // ==================================================
-      // STEP 15 - PDD MUST NOT EXIST WHEN NO
-      // ==================================================
-
-      if (validatedPddCleared === "NO" && req.file) {
-        return res.status(400).json({
-          status: false,
-          message: "PDD document must not be uploaded when PDD is NO",
-        });
       }
 
       // ==================================================
@@ -548,6 +538,37 @@ router.post(
         `,
         [createdDisbursementId, dsaId],
       );
+      // ==================================================
+      // SOCKET.IO EVENT
+      // ==================================================
+
+      const io = req.app.get("io");
+
+      // Admin Dashboard Refresh
+      io.to("admin").emit("dashboardUpdated", {
+        type: "disbursementAdded",
+        caseId: validatedCaseId,
+        disbursementId: createdDisbursementId,
+      });
+
+      // Particular DSA Dashboard Refresh
+      io.to(`dsa_${dsaId}`).emit("dashboardUpdated", {
+        type: "disbursementAdded",
+        caseId: validatedCaseId,
+        disbursementId: createdDisbursementId,
+      });
+
+      // Non-blocking Audit Log
+      logAuditAction({
+        req,
+        actionType: "CASE_DISBURSED",
+        module: "Customer Applications",
+        entityId: `CASE-${validatedCaseId}`,
+        entityName: `Case #${validatedCaseId}`,
+        summary: `Recorded loan disbursement of ₹${validatedDisbursementAmount} for Case #${validatedCaseId}.`,
+        details: `Disbursed Date: ${validatedDisbursementDate} • Rate: ${validatedRate}% • Tenure: ${validatedTenure}M • Type: ${validatedDisbursementType}`,
+        newValue: `₹${validatedDisbursementAmount}`,
+      });
 
       // ==================================================
       // STEP 19 - SUCCESS
@@ -556,10 +577,7 @@ router.post(
       return res.status(201).json({
         status: true,
 
-        message:
-          validatedPddCleared === "YES"
-            ? "Phase 4 disbursement details and PDD document created successfully"
-            : "Phase 4 disbursement details created successfully",
+        message: "Phase 4 disbursement details created successfully",
 
         data: {
           disbursement:
@@ -733,12 +751,12 @@ router.get(
           FROM loan_case_disbursements lcd
 
           /* ============================================
-             OWNERSHIP CHECK ONLY
+             OWNERSHIP CHECK (MASTER DSA OR SUB-DSA)
              ============================================ */
 
           INNER JOIN loan_cases lc
             ON lcd.case_id = lc.id
-            AND lc.dsa_id = ?
+            AND (lc.dsa_id = ? OR lc.sub_dsa_id = ?)
 
           /* ============================================
              GET LATEST PDD DOCUMENT
@@ -754,7 +772,7 @@ router.get(
 
           ORDER BY lcd.id DESC
         `,
-        [dsaId],
+        [dsaId, dsaId],
       );
 
       // ==================================================
@@ -934,6 +952,34 @@ router.get(
           lc.sanction_amount,
           lc.status AS case_status,
           lc.dsa_id,
+          lc.company_id,
+          c.company_name,
+          lc.product_id,
+          prod.product_name,
+          lc.payout_option_id,
+          bpo.option_label,
+          lc.payout_percentage,
+          lc.calculated_commission,
+          b.bank_name,
+
+
+          /* ============================================
+             PAYMENT / SETTLEMENT & CORPORATE INFLOW
+             ============================================ */
+          lcp.id AS payment_id,
+          lcp.payment_amount,
+          lcp.corporate_rate,
+          lcp.corporate_amount,
+          lcp.corporate_received_amount,
+          lcp.admin_profit,
+          lcp.corporate_payment_status,
+          lcp.corporate_received_at,
+          lcp.sub_dsa_id,
+          lcp.sub_dsa_percentage,
+          lcp.sub_dsa_amount,
+          lcp.dsa_override_percentage,
+          lcp.dsa_override_amount,
+          lcp.sub_dsa_payout_status,
 
 
           /* ============================================
@@ -943,7 +989,27 @@ router.get(
           dsa.dsa_code,
           dsa.name AS dsa_name,
           dsa.email AS dsa_email,
+          dsa.mobile AS dsa_mobile,
           dsa.status AS dsa_status,
+          dsa.account_holder_name AS dsa_account_holder_name,
+          dsa.account_number AS dsa_account_number,
+          dsa.ifsc_code AS dsa_ifsc_code,
+          dsa.bank_name AS dsa_bank_name,
+          dsa.pan_number AS dsa_pan_number,
+
+          /* ============================================
+             SUB-DSA / REFERRAL PARTNER DETAILS
+             ============================================ */
+          sub_dsa.id AS referral_sub_dsa_id,
+          sub_dsa.dsa_code AS sub_dsa_code,
+          sub_dsa.name AS sub_dsa_name,
+          sub_dsa.mobile AS sub_dsa_mobile,
+          sub_dsa.email AS sub_dsa_email,
+          sub_dsa.account_holder_name AS sub_dsa_account_holder_name,
+          sub_dsa.account_number AS sub_dsa_account_number,
+          sub_dsa.ifsc_code AS sub_dsa_ifsc_code,
+          sub_dsa.bank_name AS sub_dsa_bank_name,
+          sub_dsa.pan_number AS sub_dsa_pan_number,
 
 
           /* ============================================
@@ -974,6 +1040,27 @@ router.get(
         INNER JOIN loan_cases lc
           ON lcd.case_id = lc.id
 
+        /* ============================================
+           BANK NAME
+           ============================================ */  
+
+        INNER JOIN banks b
+          ON lc.bank_id = b.id
+
+        /* ============================================
+           CORPORATE COMPANY
+           ============================================ */
+        LEFT JOIN companies c
+          ON lc.company_id = c.id
+
+        /* ============================================
+           PRODUCT & OPTION
+           ============================================ */
+        LEFT JOIN products prod
+          ON lc.product_id = prod.id
+
+        LEFT JOIN bank_product_payout_options bpo
+          ON lc.payout_option_id = bpo.id
 
         /* ============================================
            DSA
@@ -982,6 +1069,18 @@ router.get(
         INNER JOIN dsa_users dsa
           ON lc.dsa_id = dsa.id
 
+        /* ============================================
+           SUB-DSA (REFERRAL PARTNER)
+           ============================================ */
+
+        LEFT JOIN dsa_users sub_dsa
+          ON lc.sub_dsa_id = sub_dsa.id
+
+        /* ============================================
+           PAYMENT / SETTLEMENT
+           ============================================ */
+        LEFT JOIN loan_case_payments lcp
+          ON lc.id = lcp.case_id
 
         /* ============================================
            LATEST PDD DOCUMENT
@@ -1020,7 +1119,13 @@ router.get(
             dsa_code: row.dsa_code,
             name: row.dsa_name,
             email: row.dsa_email,
+            mobile: row.dsa_mobile,
             status: row.dsa_status,
+            account_holder_name: row.dsa_account_holder_name || null,
+            account_number: row.dsa_account_number || null,
+            ifsc_code: row.dsa_ifsc_code || null,
+            bank_name: row.dsa_bank_name || null,
+            pan_number: row.dsa_pan_number || null,
           },
 
           // ============================================
@@ -1033,7 +1138,18 @@ router.get(
             customer_name: row.customer_name,
             sanction_amount: row.sanction_amount,
             status: row.case_status,
+            bank: row.bank_name || null,
+            company_id: row.company_id || null,
+            company_name: row.company_name || null,
+            product_id: row.product_id || null,
+            product_name: row.product_name || null,
+            payout_option_id: row.payout_option_id || null,
+            option_label: row.option_label || null,
+            payout_percentage: row.payout_percentage !== null ? Number(row.payout_percentage) : null,
+            calculated_commission: row.calculated_commission !== null ? Number(row.calculated_commission) : null,
           },
+          company_id: row.company_id || null,
+          company_name: row.company_name || null,
 
           // ============================================
           // PHASE 4 DISBURSEMENT
@@ -1053,6 +1169,45 @@ router.get(
             pdd_cleared: row.pdd_cleared,
             created_at: row.created_at,
             updated_at: row.updated_at,
+          },
+
+          // ============================================
+          // SUB-DSA (REFERRAL PARTNER) DETAILS
+          // ============================================
+          sub_dsa: row.referral_sub_dsa_id
+            ? {
+                id: row.referral_sub_dsa_id,
+                dsa_code: row.sub_dsa_code,
+                name: row.sub_dsa_name,
+                mobile: row.sub_dsa_mobile,
+                email: row.sub_dsa_email,
+                account_holder_name: row.sub_dsa_account_holder_name || null,
+                account_number: row.sub_dsa_account_number || null,
+                ifsc_code: row.sub_dsa_ifsc_code || null,
+                bank_name: row.sub_dsa_bank_name || null,
+                pan_number: row.sub_dsa_pan_number || null,
+              }
+            : null,
+
+          // ============================================
+          // PAYMENT / SETTLEMENT & CORPORATE INFLOW
+          // ============================================
+          payment: {
+            id: row.payment_id || null,
+            payment_amount: row.payment_amount !== null ? Number(row.payment_amount) : null,
+            corporate_rate: row.corporate_rate !== null ? Number(row.corporate_rate) : null,
+            corporate_amount: row.corporate_amount !== null ? Number(row.corporate_amount) : null,
+            corporate_received_amount: row.corporate_received_amount !== null ? Number(row.corporate_received_amount) : 0,
+            admin_profit: row.admin_profit !== null ? Number(row.admin_profit) : null,
+            corporate_payment_status: row.corporate_payment_status || "PENDING",
+            corporate_received_at: row.corporate_received_at || null,
+            dsa_payment_status: row.payment_amount ? "PAID" : "PENDING",
+            sub_dsa_id: row.sub_dsa_id || null,
+            sub_dsa_percentage: row.sub_dsa_percentage !== null ? Number(row.sub_dsa_percentage) : null,
+            sub_dsa_amount: row.sub_dsa_amount !== null ? Number(row.sub_dsa_amount) : null,
+            dsa_override_percentage: row.dsa_override_percentage !== null ? Number(row.dsa_override_percentage) : null,
+            dsa_override_amount: row.dsa_override_amount !== null ? Number(row.dsa_override_amount) : null,
+            sub_dsa_payout_status: row.sub_dsa_payout_status || "PENDING",
           },
 
           // ============================================
@@ -1111,4 +1266,241 @@ router.get(
   }
 );
 
+// ======================================================
+// TRANCHE DISBURSEMENT: GET TRANCHES FOR CASE
+// GET /api/loan-disbursement/:caseId/tranches
+// ======================================================
+
+router.get(
+  "/:caseId/tranches",
+  authenticateAndAuthorize(),
+  async (req, res) => {
+    try {
+      const caseId = parseInt(req.params.caseId, 10);
+      if (!caseId) {
+        return res.status(400).json({ status: false, message: "Valid case ID is required" });
+      }
+
+      // Check case and phase 4 disbursement
+      const caseRows = await query(
+        `SELECT lc.id, lc.sanction_amount, lc.status,
+                lcd.disbursement_amount, lcd.disbursement_type, lcd.disbursement_date
+         FROM loan_cases lc
+         LEFT JOIN loan_case_disbursements lcd ON lcd.case_id = lc.id
+         WHERE lc.id = ?
+         LIMIT 1`,
+        [caseId]
+      );
+
+      if (caseRows.length === 0) {
+        return res.status(404).json({ status: false, message: "Loan case not found" });
+      }
+
+      const caseInfo = caseRows[0];
+      const sanctionAmount = Number(caseInfo.sanction_amount || 0);
+      const totalDisbursed = Number(caseInfo.disbursement_amount || 0);
+      const pendingBalance = Math.max(0, Math.round((sanctionAmount - totalDisbursed) * 100) / 100);
+
+      // Fetch recorded tranches
+      const tranches = await query(
+        `SELECT id, case_id, tranche_number, amount, disbursement_date, cheque_reference, remarks, created_at
+         FROM loan_case_disbursement_tranches
+         WHERE case_id = ?
+         ORDER BY tranche_number ASC`,
+        [caseId]
+      );
+
+      // If no separate tranches recorded yet, but initial phase 4 exists, provide initial tranche
+      let displayTranches = tranches;
+      if (tranches.length === 0 && totalDisbursed > 0) {
+        displayTranches = [
+          {
+            id: 0,
+            case_id: caseId,
+            tranche_number: 1,
+            amount: totalDisbursed,
+            disbursement_date: caseInfo.disbursement_date,
+            cheque_reference: null,
+            remarks: "Initial Phase 4 Disbursal",
+            created_at: caseInfo.disbursement_date,
+          },
+        ];
+      }
+
+      return res.status(200).json({
+        status: true,
+        data: {
+          case_id: caseId,
+          sanction_amount: sanctionAmount,
+          total_disbursed_amount: totalDisbursed,
+          pending_balance: pendingBalance,
+          disbursement_type: caseInfo.disbursement_type || "PART",
+          is_fully_disbursed: totalDisbursed >= sanctionAmount && sanctionAmount > 0,
+          tranches: displayTranches,
+        },
+      });
+    } catch (error) {
+      console.error("GET TRANCHES ERROR:", error);
+      return res.status(500).json({
+        status: false,
+        message: "Failed to fetch tranches",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// ======================================================
+// TRANCHE DISBURSEMENT: ADD SUBSEQUENT TRANCHE
+// POST /api/loan-disbursement/tranche/add
+// ======================================================
+
+router.post(
+  "/tranche/add",
+  authenticateAndAuthorize(),
+  async (req, res) => {
+    try {
+      const { case_id, tranche_amount, disbursement_date, cheque_reference, remarks } = req.body;
+
+      const caseId = parseInt(case_id, 10);
+      const incomingAmount = parseFloat(tranche_amount);
+
+      if (!caseId || isNaN(incomingAmount) || incomingAmount <= 0) {
+        return res.status(400).json({
+          status: false,
+          message: "Valid case_id and positive tranche_amount are required",
+        });
+      }
+
+      // 1. Fetch case and current disbursement details
+      const caseRows = await query(
+        `SELECT lc.id, lc.sanction_amount, lc.status AS case_status,
+                lcd.id AS disbursement_id, lcd.disbursement_amount, lcd.disbursement_type, lcd.disbursement_date
+         FROM loan_cases lc
+         LEFT JOIN loan_case_disbursements lcd ON lcd.case_id = lc.id
+         WHERE lc.id = ?
+         LIMIT 1`,
+        [caseId]
+      );
+
+      if (caseRows.length === 0) {
+        return res.status(404).json({ status: false, message: "Loan case not found" });
+      }
+
+      const caseInfo = caseRows[0];
+      if (!caseInfo.disbursement_id) {
+        return res.status(400).json({
+          status: false,
+          message: "Initial Phase 4 disbursement must be recorded before adding subsequent tranches",
+        });
+      }
+
+      const sanctionAmount = Number(caseInfo.sanction_amount || 0);
+      const currentDisbursed = Number(caseInfo.disbursement_amount || 0);
+      const pendingBalance = Math.max(0, Math.round((sanctionAmount - currentDisbursed) * 100) / 100);
+
+      if (incomingAmount > pendingBalance) {
+        return res.status(400).json({
+          status: false,
+          message: `Tranche amount (₹${incomingAmount}) cannot exceed the pending undisbursed balance of ₹${pendingBalance}`,
+        });
+      }
+
+      const effectiveDate = disbursement_date || new Date().toISOString().slice(0, 10);
+
+      // 2. Check existing tranches in loan_case_disbursement_tranches
+      const existingTranches = await query(
+        `SELECT id, tranche_number FROM loan_case_disbursement_tranches WHERE case_id = ? ORDER BY tranche_number ASC`,
+        [caseId]
+      );
+
+      let nextTrancheNum = existingTranches.length + 1;
+
+      // If no tranches logged yet, synthesize Tranche 1 using the initial Phase 4 disbursement
+      if (existingTranches.length === 0 && currentDisbursed > 0) {
+        await query(
+          `INSERT INTO loan_case_disbursement_tranches 
+             (case_id, tranche_number, amount, disbursement_date, remarks)
+           VALUES (?, 1, ?, ?, 'Initial Phase 4 Disbursal')`,
+          [caseId, currentDisbursed, caseInfo.disbursement_date || effectiveDate]
+        );
+        nextTrancheNum = 2;
+      }
+
+      // 3. Insert new tranche
+      await query(
+        `INSERT INTO loan_case_disbursement_tranches
+           (case_id, tranche_number, amount, disbursement_date, cheque_reference, remarks)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [caseId, nextTrancheNum, incomingAmount, effectiveDate, cheque_reference || null, remarks || null]
+      );
+
+      // 4. Update cumulative disbursement amount on loan_case_disbursements
+      const newTotalDisbursed = Math.round((currentDisbursed + incomingAmount) * 100) / 100;
+      const isNowFullyDisbursed = newTotalDisbursed >= sanctionAmount && sanctionAmount > 0;
+      const newDisbType = isNowFullyDisbursed ? "FULL" : "PART";
+
+      await query(
+        `UPDATE loan_case_disbursements
+         SET disbursement_amount = ?,
+             disbursement_type = ?,
+             updated_at = NOW()
+         WHERE case_id = ?`,
+        [newTotalDisbursed, newDisbType, caseId]
+      );
+
+      // 5. If fully disbursed, update case status to DISBURSED
+      if (isNowFullyDisbursed) {
+        await query(
+          `UPDATE loan_cases
+           SET status = 'DISBURSED',
+               updated_at = NOW()
+           WHERE id = ?`,
+          [caseId]
+        );
+      }
+
+      // Non-blocking Audit Log
+      logAuditAction({
+        req,
+        actionType: "CASE_DISBURSED",
+        module: "Customer Applications",
+        entityId: `CASE-${caseId}`,
+        entityName: `Case #${caseId}`,
+        summary: isNowFullyDisbursed
+          ? `Recorded final disbursement tranche of ₹${incomingAmount}. Case #${caseId} is now FULLY DISBURSED.`
+          : `Recorded disbursement tranche of ₹${incomingAmount} for Case #${caseId}.`,
+        details: `Total Disbursed: ₹${newTotalDisbursed} / ₹${sanctionAmount} • Tranche #${nextTrancheNum}`,
+        previousValue: `₹${currentDisbursed}`,
+        newValue: `₹${newTotalDisbursed}`,
+      });
+
+      return res.status(200).json({
+        status: true,
+        message: isNowFullyDisbursed
+          ? "Tranche recorded! Case is now FULLY DISBURSED."
+          : `Tranche #${nextTrancheNum} recorded successfully.`,
+        data: {
+          case_id: caseId,
+          tranche_number: nextTrancheNum,
+          tranche_amount: incomingAmount,
+          total_disbursed_amount: newTotalDisbursed,
+          sanction_amount: sanctionAmount,
+          pending_balance: Math.max(0, Math.round((sanctionAmount - newTotalDisbursed) * 100) / 100),
+          disbursement_type: newDisbType,
+          is_fully_disbursed: isNowFullyDisbursed,
+        },
+      });
+    } catch (error) {
+      console.error("ADD TRANCHE ERROR:", error);
+      return res.status(500).json({
+        status: false,
+        message: "Failed to add disbursement tranche",
+        error: error.message,
+      });
+    }
+  }
+);
+
 module.exports = router;
+

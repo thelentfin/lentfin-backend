@@ -63,27 +63,31 @@ router.post("/add-location", (req, res) => {
                 VALUES (?,?)
             `;
 
-      db.query(
-        insertQuery,
+    db.query(insertQuery, [company_id, location_name], (err, result) => {
+      if (err) {
+        return res.status(500).json({
+          status: false,
+          message: "Insert Error",
+        });
+      }
 
-        [company_id, location_name],
+      // ==================================================
+      // SOCKET.IO EVENT
+      // ==================================================
 
-        (err) => {
-          if (err) {
-            return res.status(500).json({
-              status: false,
+      const io = req.app.get("io");
 
-              message: "Insert Error",
-            });
-          }
+      io.to("admin").emit("dashboardUpdated", {
+        type: "locationAdded",
+        locationId: result.insertId,
+        companyId: Number(company_id),
+      });
 
-          return res.json({
-            status: true,
-
-            message: "Location Added Successfully",
-          });
-        },
-      );
+      return res.json({
+        status: true,
+        message: "Location Added Successfully",
+      });
+    });
     },
   );
 });
@@ -187,27 +191,31 @@ router.put("/update-location/:id", (req, res) => {
 
     `;
 
-  db.query(
-    query,
+ db.query(query, [company_id, location_name, status, id], (err) => {
+   if (err) {
+     return res.status(500).json({
+       status: false,
+       message: "Update Error",
+     });
+   }
 
-    [company_id, location_name, status, id],
+   // ==================================================
+   // SOCKET.IO EVENT
+   // ==================================================
 
-    (err) => {
-      if (err) {
-        return res.status(500).json({
-          status: false,
+   const io = req.app.get("io");
 
-          message: "Update Error",
-        });
-      }
+   io.to("admin").emit("dashboardUpdated", {
+     type: "locationUpdated",
+     locationId: Number(id),
+     companyId: Number(company_id),
+   });
 
-      return res.json({
-        status: true,
-
-        message: "Location Updated",
-      });
-    },
-  );
+   return res.json({
+     status: true,
+     message: "Location Updated",
+   });
+ });
 });
 
 // =====================================
@@ -217,27 +225,30 @@ router.put("/update-location/:id", (req, res) => {
 router.delete("/delete-location/:id", (req, res) => {
   const id = req.params.id;
 
-  db.query(
-    "DELETE FROM locations WHERE id=?",
-
-    [id],
-
-    (err) => {
-      if (err) {
-        return res.status(500).json({
-          status: false,
-
-          message: "Delete Error",
-        });
-      }
-
-      return res.json({
-        status: true,
-
-        message: "Location Deleted",
+  db.query("DELETE FROM locations WHERE id=?", [id], (err) => {
+    if (err) {
+      return res.status(500).json({
+        status: false,
+        message: "Delete Error",
       });
-    },
-  );
+    }
+
+    // ==================================================
+    // SOCKET.IO EVENT
+    // ==================================================
+
+    const io = req.app.get("io");
+
+    io.to("admin").emit("dashboardUpdated", {
+      type: "locationDeleted",
+      locationId: Number(id),
+    });
+
+    return res.json({
+      status: true,
+      message: "Location Deleted",
+    });
+  });
 });
 
 module.exports = router;

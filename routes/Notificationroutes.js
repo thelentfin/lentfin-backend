@@ -169,6 +169,31 @@ router.put("/read-all", requireAuth, async (req, res) => {
       `,
       [userId],
     );
+    
+
+// ==================================================
+// SOCKET.IO EVENT
+// ==================================================
+
+const io = req.app.get("io");
+
+const room =
+  req.user.role === "admin"
+    ? "admin"
+    : req.user.role === "Corporate DSA"
+      ? "corporate"
+      : `dsa_${userId}`;
+
+io.to(room).emit("notificationUpdated", {
+  type: "readAll",
+  updatedCount: result.affectedRows,
+});
+
+return res.status(200).json({
+  status: true,
+  message: "All notifications marked as read.",
+  updated_count: result.affectedRows,
+});
 
     return res.status(200).json({
       status: true,
@@ -247,7 +272,23 @@ router.put("/:id/read", requireAuth, async (req, res) => {
         message: "Notification not found.",
       });
     }
+    // ==================================================
+    // SOCKET.IO EVENT
+    // ==================================================
 
+    const io = req.app.get("io");
+
+    const room =
+      req.user.role === "admin"
+        ? "admin"
+        : req.user.role === "Corporate DSA"
+          ? "corporate"
+          : `dsa_${userId}`;
+
+    io.to(room).emit("notificationUpdated", {
+      type: "readSingle",
+      notificationId,
+    });
     return res.status(200).json({
       status: true,
       message: "Notification marked as read.",
@@ -303,7 +344,23 @@ router.delete("/all", requireAuth, async (req, res) => {
       `,
       [userId],
     );
+    // ==================================================
+    // SOCKET.IO EVENT
+    // ==================================================
 
+    const io = req.app.get("io");
+
+    const room =
+      req.user.role === "admin"
+        ? "admin"
+        : req.user.role === "Corporate DSA"
+          ? "corporate"
+          : `dsa_${userId}`;
+
+    io.to(room).emit("notificationUpdated", {
+      type: "deleteAll",
+      deletedCount: result.affectedRows,
+    });
     // ==================================================
     // STEP 3 - SUCCESS
     // ==================================================
@@ -313,7 +370,6 @@ router.delete("/all", requireAuth, async (req, res) => {
       message: "All read notifications deleted successfully.",
       deleted_count: result.affectedRows,
     });
-
   } catch (error) {
     console.error("DELETE ALL READ NOTIFICATIONS ERROR:", error);
 
@@ -391,11 +447,26 @@ router.delete("/:id", requireAuth, async (req, res) => {
     if (result.affectedRows === 0) {
       return res.status(404).json({
         status: false,
-        message:
-          "Read notification not found or notification is still unread.",
+        message: "Read notification not found or notification is still unread.",
       });
     }
+    // ==================================================
+    // SOCKET.IO EVENT
+    // ==================================================
 
+    const io = req.app.get("io");
+
+    const room =
+      req.user.role === "admin"
+        ? "admin"
+        : req.user.role === "Corporate DSA"
+          ? "corporate"
+          : `dsa_${userId}`;
+
+    io.to(room).emit("notificationUpdated", {
+      type: "deleteSingle",
+      notificationId,
+    });
     // ==================================================
     // STEP 6 - SUCCESS
     // ==================================================
@@ -405,7 +476,6 @@ router.delete("/:id", requireAuth, async (req, res) => {
       message: "Read notification deleted successfully.",
       deleted_id: notificationId,
     });
-
   } catch (error) {
     console.error("DELETE SINGLE READ NOTIFICATION ERROR:", error);
 
