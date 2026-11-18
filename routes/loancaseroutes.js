@@ -560,6 +560,8 @@ router.post(
         });
       }
 
+
+
       // ==================================================
       // STANDARD LOAN CASE (EXISTING LOGIC)
       // STEP 4
@@ -594,6 +596,8 @@ router.post(
         });
       }
 
+
+
       // ==================================================
       // STEP 6
       // VALIDATE REQUEST BODY
@@ -627,6 +631,8 @@ router.post(
         });
       }
 
+
+
       // ==================================================
       // GET CLEAN / VALIDATED DATA
       // ==================================================
@@ -659,6 +665,8 @@ router.post(
         });
       }
 
+
+
       // ==================================================
       // STEP 8
       // CHECK DSA EXISTS
@@ -687,6 +695,8 @@ router.post(
           message: "DSA user not found",
         });
       }
+
+
 
       // ==================================================
       // STEP 9
@@ -762,6 +772,8 @@ router.post(
         });
       }
 
+
+
       // ==================================================
       // STEP 9.3
       // CHECK COMPANY ACTIVE
@@ -773,6 +785,8 @@ router.post(
           message: "Selected company is inactive.",
         });
       }
+
+
 
       // ==================================================
       // STEP 10
@@ -799,6 +813,8 @@ router.post(
         });
       }
 
+
+
       // ==================================================
       // STEP 11
       // CHECK BANK ACTIVE
@@ -810,6 +826,8 @@ router.post(
           message: "Selected bank is inactive",
         });
       }
+
+
 
       // ==================================================
       // STEP 12
@@ -838,6 +856,8 @@ router.post(
         }
       }
 
+
+
       // ==================================================
       // STEP 13
       // LOAN ACCOUNT NUMBER DUPLICATE
@@ -865,6 +885,8 @@ router.post(
         }
       }
 
+
+
       // ==================================================
       // STEP 14
       // CREATE TEMPORARY CASE NUMBER
@@ -875,26 +897,52 @@ router.post(
       )}`;
 
       // ==================================================
-      // STEP 14b - RESOLVE SLAB RATE FROM PAYOUT OPTION
+      // STEP 14b - RESOLVE CUSTOM DSA PRODUCT PAYOUT RATE
       // ==================================================
 
       let parsedProductId = product_id && !isNaN(Number(product_id)) ? Number(product_id) : null;
       let parsedOptionId = payout_option_id && !isNaN(Number(payout_option_id)) ? Number(payout_option_id) : null;
       let slabPercentage = null;
 
-      if (parsedOptionId) {
+      // 1. Highest Priority: Explicit custom rate sent in request body
+      if (req.body.payout_percentage !== undefined && req.body.payout_percentage !== null) {
+        const bodyRate = Number(req.body.payout_percentage);
+        if (!isNaN(bodyRate) && bodyRate > 0) {
+          slabPercentage = bodyRate;
+        }
+      }
+
+      // 2. Query dsa_product_payout_rates configured by Admin for this partner
+      if ((slabPercentage === null || slabPercentage <= 0) && dsaId && validatedBankId && parsedProductId) {
+        try {
+          const dsaRateRows = await query(
+            "SELECT payout_percentage FROM dsa_product_payout_rates WHERE dsa_id = ? AND bank_id = ? AND product_id = ? LIMIT 1",
+            [dsaId, validatedBankId, parsedProductId]
+          );
+          if (dsaRateRows && dsaRateRows.length > 0 && Number(dsaRateRows[0].payout_percentage) > 0) {
+            slabPercentage = Number(dsaRateRows[0].payout_percentage);
+          }
+        } catch (e) {
+          console.error("Failed to query dsa_product_payout_rates:", e);
+        }
+      }
+
+      // 3. Fallback to bank_product_payout_options if custom rate not configured
+      if ((slabPercentage === null || slabPercentage <= 0) && parsedOptionId) {
         try {
           const optRows = await query(
             "SELECT payout_percentage FROM bank_product_payout_options WHERE id = ? LIMIT 1",
             [parsedOptionId]
           );
-          if (optRows && optRows.length > 0) {
+          if (optRows && optRows.length > 0 && Number(optRows[0].payout_percentage) > 0) {
             slabPercentage = Number(optRows[0].payout_percentage);
           }
         } catch (e) {
           console.error("Failed to resolve payout option:", e);
         }
       }
+
+
 
       // ==================================================
       // STEP 15
@@ -1021,6 +1069,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ],
         );
       }
+
+
 
       // ==================================================
       // STEP 23
@@ -1165,6 +1215,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         }
       }
 
+
+
       // ==================================================
       // STEP 28
       // DELETE CREATED LOAN CASE
@@ -1188,6 +1240,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           console.error("LOAN CASE CLEANUP ERROR:", cleanupError);
         }
       }
+
+
 
       // ==================================================
       // STEP 29
@@ -1232,6 +1286,8 @@ router.get(
         });
       }
 
+
+
       // ==================================================
       // STEP 2
       // CHECK DSA ACTIVE
@@ -1260,6 +1316,8 @@ router.get(
           message: "DSA account is inactive",
         });
       }
+
+
 
       // ==================================================
       // STEP 3
@@ -1375,6 +1433,8 @@ ORDER BY lc.id DESC;
         }
       }
 
+
+
       // ==================================================
       // STEP 5
       // ATTACH DOCUMENTS & CAR LOAN DETAILS
@@ -1452,6 +1512,8 @@ router.get(
         });
       }
 
+
+
       // ==================================================
       // STEP 3 - ADMIN ROLE CHECK
       // ==================================================
@@ -1466,6 +1528,8 @@ router.get(
           message: "Only admin can access all loan case details",
         });
       }
+
+
 
       // ==================================================
       // STEP 4 - GET ALL LOAN CASES
@@ -1968,6 +2032,8 @@ router.get(
         });
       }
 
+
+
       // ==================================================
       // STEP 3
       // GET DSA ID
@@ -1981,6 +2047,8 @@ router.get(
           message: "DSA authentication information not found",
         });
       }
+
+
 
       // ==================================================
       // STEP 4
@@ -2010,6 +2078,8 @@ router.get(
           message: "DSA account is inactive",
         });
       }
+
+
 
       // ==================================================
       // STEP 5
@@ -2070,6 +2140,8 @@ ON lc.company_id = c.id
           message: "Loan case not found",
         });
       }
+
+
 
       // ==================================================
       // STEP 7

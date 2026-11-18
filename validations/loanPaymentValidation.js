@@ -11,6 +11,7 @@ const { z } = require("zod");
 const PAYMENT_OPTIONS = {
   SPOT_48_HOURS: 0.85,
   AFTER_5_DAYS: 0.9,
+  CUSTOM_RATE: 0.0,
 };
 
 // ======================================================
@@ -34,7 +35,7 @@ const loanPaymentSchema = z.object({
   // PAYMENT OPTION
   // ====================================================
 
-  payment_option: z.enum(["SPOT_48_HOURS", "AFTER_5_DAYS"], {
+  payment_option: z.enum(["SPOT_48_HOURS", "AFTER_5_DAYS", "CUSTOM_RATE"], {
     required_error: "Payment option is required",
     invalid_type_error: "Payment option must be SPOT_48_HOURS or AFTER_5_DAYS",
   }),
