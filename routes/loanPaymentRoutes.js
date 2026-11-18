@@ -170,6 +170,9 @@ router.post(
           lc.case_number,
           lc.dsa_id,
           lc.sub_dsa_id,
+          lc.bank_id,
+          lc.product_id,
+          lc.payout_option_id,
           lc.customer_name,
           lc.sanction_amount,
           lc.payout_percentage,
@@ -253,20 +256,28 @@ router.post(
       // STEP 9 - GET RESOLVED PERCENTAGE
       // ==================================================
 
-      let paymentPercentage = getPaymentPercentage(validatedPaymentOption);
+      let paymentPercentage = null;
 
-      if (
-        validatedPaymentOption === "SPOT_48_HOURS" &&
-        loanCase.spot_payment_percentage !== null &&
-        loanCase.spot_payment_percentage !== undefined
+      // Check request body payout_percentage
+      if (req.body.payout_percentage !== undefined && req.body.payout_percentage !== null) {
+        const bp = Number(req.body.payout_percentage);
+        if (!isNaN(bp) && bp > 0) {
+          paymentPercentage = bp;
+        }
+      }
+
+      // Check loanCase.payout_percentage
+      if ((paymentPercentage === null || paymentPercentage <= 0) &&
+        loanCase.payout_percentage !== null &&
+        loanCase.payout_percentage !== undefined &&
+        Number(loanCase.payout_percentage) > 0
       ) {
-        paymentPercentage = Number(loanCase.spot_payment_percentage);
-      } else if (
-        validatedPaymentOption === "AFTER_5_DAYS" &&
-        loanCase.five_days_payment_percentage !== null &&
-        loanCase.five_days_payment_percentage !== undefined
-      ) {
-        paymentPercentage = Number(loanCase.five_days_payment_percentage);
+        paymentPercentage = Number(loanCase.payout_percentage);
+      }
+
+      // Fallback to legacy options if available
+      if (paymentPercentage === null || paymentPercentage <= 0) {
+        paymentPercentage = getPaymentPercentage(validatedPaymentOption);
       }
 
       if (paymentPercentage === null || !Number.isFinite(paymentPercentage)) {
@@ -324,11 +335,34 @@ router.post(
         }
       }
 
-      // Auto-populate Corporate Inflow Rate & Revenue from the selected partner slab
-      const corporateRate =
-        loanCase.payout_percentage !== null && loanCase.payout_percentage !== undefined
-          ? Number(loanCase.payout_percentage)
-          : null;
+      // Auto-populate Corporate Inflow Rate & Revenue from Bank Master (bank_product_payout_options)
+      let corporateRate = null;
+      if (loanCase.bank_id && loanCase.product_id) {
+        try {
+          const bankOptionRows = await query(
+            "SELECT payout_percentage FROM bank_product_payout_options WHERE bank_id = ? AND product_id = ? ORDER BY id DESC LIMIT 1",
+            [loanCase.bank_id, loanCase.product_id]
+          );
+          if (bankOptionRows && bankOptionRows.length > 0 && Number(bankOptionRows[0].payout_percentage) > 0) {
+            corporateRate = Number(bankOptionRows[0].payout_percentage);
+          }
+        } catch (bErr) {
+          console.error("Failed to query bank master rate:", bErr);
+        }
+      }
+
+      // Fallback to payout_option_id if linked
+      if (corporateRate === null && loanCase.payout_option_id) {
+        try {
+          const optRows = await query(
+            "SELECT payout_percentage FROM bank_product_payout_options WHERE id = ? LIMIT 1",
+            [loanCase.payout_option_id]
+          );
+          if (optRows && optRows.length > 0 && Number(optRows[0].payout_percentage) > 0) {
+            corporateRate = Number(optRows[0].payout_percentage);
+          }
+        } catch (e) {}
+      }
 
       const corporateAmount =
         corporateRate !== null
@@ -630,6 +664,7 @@ router.get(
           lc.customer_name,
           lc.sanction_amount,
           lc.status AS case_status,
+          lc.payout_percentage,
 
           /* ============================================
              DSA DETAILS
@@ -662,7 +697,7 @@ router.get(
         // If current user is Sub-DSA, present their specific rate & payout
         const effectivePct = isSubDsa && row.sub_dsa_percentage !== null
           ? row.sub_dsa_percentage
-          : (isSubDsa ? null : (row.dsa_override_percentage !== null ? row.dsa_override_percentage : row.payment_percentage));
+          : (isSubDsa ? null : (row.dsa_override_percentage !== null ? row.dsa_override_percentage : (Number(row.payment_percentage) > 0 ? row.payment_percentage : row.payout_percentage)));
 
         const effectiveAmount = isSubDsa && row.sub_dsa_amount !== null
           ? row.sub_dsa_amount
@@ -820,6 +855,7 @@ router.get(
           lc.sanction_amount,
           lc.payout_percentage AS slab_percentage,
           lc.status AS case_status,
+          lc.payout_percentage,
           lc.dsa_id,
           lc.company_id,
 
@@ -1186,11 +1222,22 @@ router.post(
           ? Number(disbRows[0].disbursement_amount)
           : Number(lc.sanction_amount || 0);
 
-        const dsaRate = 0.90;
+        const dsaRate = lc.payout_percentage ? Number(lc.payout_percentage) : 0;
         const dsaPayout = Math.round(((disbAmt * dsaRate) / 100) * 100) / 100;
-        const rate = corporate_rate !== undefined && corporate_rate !== null
+        let rate = corporate_rate !== undefined && corporate_rate !== null
           ? Number(corporate_rate)
-          : (lc.payout_percentage ? Number(lc.payout_percentage) : null);
+          : null;
+        if (rate === null && lc.bank_id && lc.product_id) {
+          try {
+            const bRows = await query(
+              "SELECT payout_percentage FROM bank_product_payout_options WHERE bank_id = ? AND product_id = ? ORDER BY id DESC LIMIT 1",
+              [lc.bank_id, lc.product_id]
+            );
+            if (bRows.length > 0 && Number(bRows[0].payout_percentage) > 0) {
+              rate = Number(bRows[0].payout_percentage);
+            }
+          } catch (e) {}
+        }
         const corpAmt = rate !== null ? Math.round(((disbAmt * rate) / 100) * 100) / 100 : null;
         const netRev = corpAmt !== null ? Math.round((corpAmt - dsaPayout) * 100) / 100 : null;
 
@@ -1198,7 +1245,7 @@ router.post(
           `INSERT INTO loan_case_payments (
             case_id, payment_option, payment_percentage, loan_amount, payment_amount,
             corporate_rate, corporate_amount, admin_profit, corporate_received_amount, corporate_payment_status
-          ) VALUES (?, 'STANDARD 5 DAYS', ?, ?, ?, ?, ?, ?, 0.00, 'PENDING')`,
+          ) VALUES (?, 'CUSTOM_RATE', ?, ?, ?, ?, ?, ?, 0.00, 'PENDING')`,
           [case_id, dsaRate, disbAmt, dsaPayout, rate, corpAmt, netRev]
         );
 
