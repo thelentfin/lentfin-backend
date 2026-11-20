@@ -321,17 +321,36 @@ router.post(
       let dsaOverrideAmount = null;
 
       if (loanCase.sub_dsa_id) {
-        if (validatedSubDsaPct !== undefined && validatedSubDsaPct !== null) {
+        // 1. Fetch pre-configured Sub-DSA payout rate directly from database
+        if (loanCase.bank_id && loanCase.product_id) {
+          try {
+            const subRateRows = await query(
+              "SELECT payout_percentage FROM dsa_product_payout_rates WHERE dsa_id = ? AND bank_id = ? AND product_id = ? LIMIT 1",
+              [loanCase.sub_dsa_id, loanCase.bank_id, loanCase.product_id]
+            );
+            if (subRateRows && subRateRows.length > 0 && Number(subRateRows[0].payout_percentage) > 0) {
+              subDsaPercentage = Number(subRateRows[0].payout_percentage);
+            }
+          } catch (srErr) {
+            console.error("Failed to query sub-dsa configured rate:", srErr);
+          }
+        }
+
+        // 2. Fallback to passed sub_dsa_percentage if available
+        if (subDsaPercentage === null && validatedSubDsaPct !== undefined && validatedSubDsaPct !== null && !isNaN(Number(validatedSubDsaPct))) {
           subDsaPercentage = Number(validatedSubDsaPct);
-          if (subDsaPercentage > paymentPercentage) {
+        }
+
+        if (subDsaPercentage !== null) {
+          if (subDsaPercentage >= paymentPercentage) {
             return res.status(400).json({
               status: false,
-              message: `Sub-DSA share (${subDsaPercentage}%) cannot exceed base commission (${paymentPercentage}%)`,
+              message: `Sub-DSA share (${subDsaPercentage}%) must be strictly lesser than Master DSA base commission (${paymentPercentage}%)`,
             });
           }
           subDsaAmount = Math.round(((disbursedAmount * subDsaPercentage) / 100) * 100) / 100;
-          dsaOverridePercentage = Math.round((paymentPercentage - subDsaPercentage) * 100) / 100;
-          dsaOverrideAmount = Math.round((paymentAmount - subDsaAmount) * 100) / 100;
+          dsaOverridePercentage = Math.max(0, Math.round((paymentPercentage - subDsaPercentage) * 100) / 100);
+          dsaOverrideAmount = Math.max(0, Math.round((paymentAmount - subDsaAmount) * 100) / 100);
         }
       }
 

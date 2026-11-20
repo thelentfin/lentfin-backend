@@ -904,14 +904,15 @@ router.post(
         return res.status(400).json({ status: false, message: "dsa_id, bank_id, and rates are required." });
       }
 
-      // 1. Fetch DSA User details for audit log (lookup original dsa_code)
+      // 1. Fetch DSA User details for audit log (lookup original dsa_code and parent DSA)
       let dsaCode = incomingDsaCode ? String(incomingDsaCode).trim() : null;
       let dsaPartnerName = "";
+      let parentDsaId = null;
       try {
         let uRows = [];
         try {
           const [dRows] = await db.promise().query(
-            "SELECT id, name, firm_name, dsa_code FROM dsa_users WHERE id = ? LIMIT 1",
+            "SELECT id, name, firm_name, dsa_code, referred_by_dsa_id FROM dsa_users WHERE id = ? LIMIT 1",
             [Number(dsa_id)]
           );
           uRows = dRows;
@@ -922,7 +923,7 @@ router.post(
         if (uRows.length === 0) {
           try {
             const [regRows] = await db.promise().query(
-              "SELECT id, name, firm_name, dsa_code FROM users WHERE id = ? LIMIT 1",
+              "SELECT id, name, firm_name, dsa_code, referred_by_dsa_id FROM users WHERE id = ? LIMIT 1",
               [Number(dsa_id)]
             );
             uRows = regRows;
@@ -936,9 +937,46 @@ router.post(
             dsaCode = uRows[0].dsa_code;
           }
           dsaPartnerName = uRows[0].name || uRows[0].firm_name || "";
+          parentDsaId = uRows[0].referred_by_dsa_id ? Number(uRows[0].referred_by_dsa_id) : null;
         }
       } catch (uErr) {
         console.warn("Audit lookup user warning:", uErr.message);
+      }
+
+      // 1B. Enforce Validation: Sub-DSA rate must be strictly lesser than Master DSA rate
+      if (parentDsaId && parentDsaId > 0) {
+        try {
+          const [masterRows] = await db.promise().query(
+            "SELECT product_id, payout_percentage FROM dsa_product_payout_rates WHERE dsa_id = ? AND bank_id = ?",
+            [parentDsaId, Number(bank_id)]
+          );
+          const masterRatesMap = {};
+          for (const mr of masterRows) {
+            masterRatesMap[mr.product_id] = parseFloat(mr.payout_percentage) || 0;
+          }
+
+          const productIds = Object.keys(rates);
+          for (const prodId of productIds) {
+            const subRate = parseFloat(rates[prodId]) || 0;
+            if (subRate > 0) {
+              const masterRate = masterRatesMap[prodId] !== undefined ? masterRatesMap[prodId] : 0;
+              if (masterRate <= 0) {
+                return res.status(400).json({
+                  status: false,
+                  message: `Cannot configure rate: Master DSA has no configured rate for product #${prodId} on this bank. Please configure Master DSA's rate first.`,
+                });
+              }
+              if (subRate >= masterRate) {
+                return res.status(400).json({
+                  status: false,
+                  message: `Invalid rate: Sub-DSA rate (${subRate}%) must be strictly lesser than Master DSA rate (${masterRate}%). It cannot be equal or higher.`,
+                });
+              }
+            }
+          }
+        } catch (valErr) {
+          console.error("Sub-DSA rate comparison error:", valErr);
+        }
       }
 
       // Fallback format if no dsa_code exists
