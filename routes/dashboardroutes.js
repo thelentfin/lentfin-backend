@@ -228,7 +228,8 @@ router.get("/admin", requireAuth, async (req, res) => {
           lc.product_id,
           prod.product_name,
           lc.payout_option_id,
-          bpo.option_label,
+          COALESCE(bpo_exact.option_label, bpo_bank.option_label) AS option_label,
+          COALESCE(bpo_exact.payout_percentage, bpo_bank.payout_percentage) AS bank_benchmark_rate,
           lc.payout_percentage,
           lc.calculated_commission,
 
@@ -289,8 +290,16 @@ router.get("/admin", requireAuth, async (req, res) => {
         LEFT JOIN products prod
           ON lc.product_id=prod.id
 
-        LEFT JOIN bank_product_payout_options bpo
-          ON lc.payout_option_id=bpo.id
+        LEFT JOIN bank_product_payout_options bpo_exact
+          ON lc.payout_option_id=bpo_exact.id
+
+        LEFT JOIN (
+          SELECT bank_id, product_id, MAX(payout_percentage) AS payout_percentage, MAX(option_label) AS option_label
+          FROM bank_product_payout_options
+          WHERE status='Active'
+          GROUP BY bank_id, product_id
+        ) bpo_bank
+          ON (lc.bank_id=bpo_bank.bank_id AND lc.product_id=bpo_bank.product_id)
 
         LEFT JOIN loan_case_disbursements ld
           ON lc.id=ld.case_id
@@ -426,9 +435,11 @@ router.get("/admin", requireAuth, async (req, res) => {
       const baseAmount = disbAmt > 0 ? disbAmt : sanctionAmt;
       const paymentOption = String(p?.payment_option || lc.payment_option || "");
       const paymentPct =
-        p?.payment_percentage !== undefined && p?.payment_percentage !== null
+        p?.payment_percentage !== undefined && p?.payment_percentage !== null && Number(p.payment_percentage) > 0
           ? Number(p.payment_percentage)
-          : (paymentOption.includes("48") || paymentOption.includes("SPOT") ? 0.85 : 0.90);
+          : lc.payout_percentage !== undefined && lc.payout_percentage !== null && Number(lc.payout_percentage) > 0
+          ? Number(lc.payout_percentage)
+          : 0;
 
       let comm = 0;
       if (p?.payment_amount && Number(p.payment_amount) > 0) {
@@ -500,10 +511,8 @@ router.get("/admin", requireAuth, async (req, res) => {
       const effectiveRate =
         p?.corporate_rate !== null && p?.corporate_rate !== undefined && p?.corporate_rate !== ""
           ? Number(p.corporate_rate)
-          : lc.payout_percentage !== null && lc.payout_percentage !== undefined && lc.payout_percentage !== ""
-          ? Number(lc.payout_percentage)
-          : lc.slab_percentage !== null && lc.slab_percentage !== undefined && lc.slab_percentage !== ""
-          ? Number(lc.slab_percentage)
+          : lc.bank_benchmark_rate !== null && lc.bank_benchmark_rate !== undefined && Number(lc.bank_benchmark_rate) > 0
+          ? Number(lc.bank_benchmark_rate)
           : null;
 
       const corporateRate = effectiveRate !== null && !isNaN(effectiveRate) ? effectiveRate : null;
@@ -523,7 +532,7 @@ router.get("/admin", requireAuth, async (req, res) => {
       return {
         ...lc,
         payment_amount: p?.payment_amount || comm,
-        payment_option: p?.payment_option || (paymentPct === 0.85 ? "Spot 48h (0.85%)" : "After 5 Days (0.90%)"),
+        payment_option: p?.payment_option && !p.payment_option.includes("5 Days") ? p.payment_option : (paymentPct > 0 ? `${paymentPct}% Custom Rate` : "Custom Rate"),
         payment_percentage: paymentPct,
         commission_rate: paymentPct,
         commission_amount: comm,
@@ -1009,9 +1018,11 @@ router.get("/dsa", requireAuth, async (req, res) => {
 
       // Base platform slab rate and gross amount
       const basePlatformPct =
-        p?.payment_percentage !== undefined && p?.payment_percentage !== null
+        p?.payment_percentage !== undefined && p?.payment_percentage !== null && Number(p.payment_percentage) > 0
           ? Number(p.payment_percentage)
-          : (paymentOption.includes("48") || paymentOption.includes("SPOT") ? 0.85 : 0.90);
+          : lc.payout_percentage !== undefined && lc.payout_percentage !== null && Number(lc.payout_percentage) > 0
+          ? Number(lc.payout_percentage)
+          : 0;
 
       const grossAmt =
         p?.payment_amount && Number(p.payment_amount) > 0
@@ -1068,8 +1079,8 @@ router.get("/dsa", requireAuth, async (req, res) => {
       }
 
       const defaultPlanLabel = isSubDsa
-        ? (paymentOption.includes("48") || paymentOption.includes("SPOT") ? "Spot 48h Settlement" : "Standard 5-Days Settlement")
-        : (basePlatformPct === 0.85 ? "Spot 48h (0.85%)" : "After 5 Days (0.90%)");
+        ? "Partner Referral Share"
+        : (basePlatformPct > 0 ? `${basePlatformPct}% Custom Rate` : "Custom Rate");
 
       const finalPaymentOption = isSubDsa
         ? (paymentOption.includes("48") || paymentOption.includes("SPOT") ? "Spot 48h Settlement" : "Standard 5-Days Settlement")

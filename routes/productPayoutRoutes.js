@@ -808,4 +808,318 @@ router.post(
   }
 );
 
+// =========================================================================
+// 7A. GET ALL DSA CUSTOM PAYOUT RATES (Admin Settings - Bulk Initial Load)
+// GET /api/admin/dsa-payout-rates
+// =========================================================================
+router.get(
+  "/admin/dsa-payout-rates",
+  authenticateAndAuthorize("admin"),
+  async (req, res) => {
+    try {
+      try {
+        const [rows] = await db.promise().query(
+          "SELECT dsa_id, bank_id, product_id, payout_percentage FROM dsa_product_payout_rates"
+        );
+
+        const allRatesMap = {};
+        for (const row of rows) {
+          if (!allRatesMap[row.dsa_id]) {
+            allRatesMap[row.dsa_id] = {};
+          }
+          if (!allRatesMap[row.dsa_id][row.bank_id]) {
+            allRatesMap[row.dsa_id][row.bank_id] = {};
+          }
+          allRatesMap[row.dsa_id][row.bank_id][row.product_id] = parseFloat(row.payout_percentage) || 0;
+        }
+
+        return res.status(200).json({ status: true, data: allRatesMap });
+      } catch (dbErr) {
+        if (dbErr.code === "ER_NO_SUCH_TABLE") {
+          return res.status(200).json({ status: true, data: {} });
+        }
+        throw dbErr;
+      }
+    } catch (error) {
+      console.error("GET ALL DSA PAYOUT RATES ERROR:", error);
+      return res.status(500).json({ status: false, message: "Failed to fetch all DSA payout rates.", error: error.message });
+    }
+  }
+);
+
+// =========================================================================
+// 7. GET DSA CUSTOM PAYOUT RATES FOR A SPECIFIC USER (Admin Settings)
+// GET /api/admin/dsa-payout-rates/:dsaId
+// =========================================================================
+router.get(
+  "/admin/dsa-payout-rates/:dsaId",
+  authenticateAndAuthorize("admin"),
+  async (req, res) => {
+    try {
+      const { dsaId } = req.params;
+      if (!dsaId || isNaN(Number(dsaId))) {
+        return res.status(400).json({ status: false, message: "Valid DSA ID is required." });
+      }
+
+      try {
+        const [rows] = await db.promise().query(
+          "SELECT bank_id, product_id, payout_percentage FROM dsa_product_payout_rates WHERE dsa_id = ?",
+          [Number(dsaId)]
+        );
+
+        const ratesMap = {};
+        for (const row of rows) {
+          if (!ratesMap[row.bank_id]) {
+            ratesMap[row.bank_id] = {};
+          }
+          ratesMap[row.bank_id][row.product_id] = parseFloat(row.payout_percentage) || 0;
+        }
+
+        return res.status(200).json({ status: true, data: ratesMap });
+      } catch (dbErr) {
+        if (dbErr.code === "ER_NO_SUCH_TABLE") {
+          return res.status(200).json({ status: true, data: {} });
+        }
+        throw dbErr;
+      }
+    } catch (error) {
+      console.error("GET DSA PAYOUT RATES ERROR:", error);
+      return res.status(500).json({ status: false, message: "Failed to fetch DSA payout rates.", error: error.message });
+    }
+  }
+);
+
+// =========================================================================
+// 8. SAVE DSA CUSTOM PAYOUT RATES (Admin Settings)
+// POST /api/admin/dsa-payout-rates
+// Body: { dsa_id, bank_id, rates: { [product_id]: percentage } }
+// =========================================================================
+router.post(
+  "/admin/dsa-payout-rates",
+  authenticateAndAuthorize("admin"),
+  async (req, res) => {
+    try {
+      const { dsa_id, bank_id, rates, dsa_code: incomingDsaCode } = req.body;
+      if (!dsa_id || !bank_id || !rates || typeof rates !== "object") {
+        return res.status(400).json({ status: false, message: "dsa_id, bank_id, and rates are required." });
+      }
+
+      // 1. Fetch DSA User details for audit log (lookup original dsa_code and parent DSA)
+      let dsaCode = incomingDsaCode ? String(incomingDsaCode).trim() : null;
+      let dsaPartnerName = "";
+      let parentDsaId = null;
+      try {
+        let uRows = [];
+        try {
+          const [dRows] = await db.promise().query(
+            "SELECT id, name, firm_name, dsa_code, referred_by_dsa_id FROM dsa_users WHERE id = ? LIMIT 1",
+            [Number(dsa_id)]
+          );
+          uRows = dRows;
+        } catch (dErr) {
+          // If dsa_users is unavailable, fallback to users table
+        }
+
+        if (uRows.length === 0) {
+          try {
+            const [regRows] = await db.promise().query(
+              "SELECT id, name, firm_name, dsa_code, referred_by_dsa_id FROM users WHERE id = ? LIMIT 1",
+              [Number(dsa_id)]
+            );
+            uRows = regRows;
+          } catch (rErr) {
+            // silent catch
+          }
+        }
+
+        if (uRows.length > 0) {
+          if (!dsaCode && uRows[0].dsa_code) {
+            dsaCode = uRows[0].dsa_code;
+          }
+          dsaPartnerName = uRows[0].name || uRows[0].firm_name || "";
+          parentDsaId = uRows[0].referred_by_dsa_id ? Number(uRows[0].referred_by_dsa_id) : null;
+        }
+      } catch (uErr) {
+        console.warn("Audit lookup user warning:", uErr.message);
+      }
+
+      // 1B. Enforce Validation: Sub-DSA rate must be strictly lesser than Master DSA rate
+      if (parentDsaId && parentDsaId > 0) {
+        try {
+          const [masterRows] = await db.promise().query(
+            "SELECT product_id, payout_percentage FROM dsa_product_payout_rates WHERE dsa_id = ? AND bank_id = ?",
+            [parentDsaId, Number(bank_id)]
+          );
+          const masterRatesMap = {};
+          for (const mr of masterRows) {
+            masterRatesMap[mr.product_id] = parseFloat(mr.payout_percentage) || 0;
+          }
+
+          const productIds = Object.keys(rates);
+          for (const prodId of productIds) {
+            const subRate = parseFloat(rates[prodId]) || 0;
+            if (subRate > 0) {
+              const masterRate = masterRatesMap[prodId] !== undefined ? masterRatesMap[prodId] : 0;
+              if (masterRate <= 0) {
+                return res.status(400).json({
+                  status: false,
+                  message: `Cannot configure rate: Master DSA has no configured rate for product #${prodId} on this bank. Please configure Master DSA's rate first.`,
+                });
+              }
+              if (subRate >= masterRate) {
+                return res.status(400).json({
+                  status: false,
+                  message: `Invalid rate: Sub-DSA rate (${subRate}%) must be strictly lesser than Master DSA rate (${masterRate}%). It cannot be equal or higher.`,
+                });
+              }
+            }
+          }
+        } catch (valErr) {
+          console.error("Sub-DSA rate comparison error:", valErr);
+        }
+      }
+
+      // Fallback format if no dsa_code exists
+      if (!dsaCode) {
+        dsaCode = `DSA-${String(dsa_id).padStart(5, "0")}`;
+      }
+
+      // 2. Fetch Bank details for audit log
+      let bankName = `Bank #${bank_id}`;
+      try {
+        const [bRows] = await db.promise().query(
+          "SELECT id, bank_name FROM banks WHERE id = ? LIMIT 1",
+          [Number(bank_id)]
+        );
+        if (bRows.length > 0) {
+          bankName = bRows[0].bank_name || `Bank #${bank_id}`;
+        }
+      } catch (bErr) {
+        console.warn("Audit lookup bank warning:", bErr.message);
+      }
+
+      // 3. Fetch Master Products for friendly name mapping
+      const productNameMap = {};
+      try {
+        const [pRows] = await db.promise().query("SELECT id, product_name FROM products");
+        for (const p of pRows) {
+          productNameMap[p.id] = p.product_name;
+        }
+      } catch (pErr) {
+        console.warn("Audit lookup products warning:", pErr.message);
+      }
+
+      // 4. Fetch existing rates to track previous values
+      const prevRatesMap = {};
+      try {
+        const [prevRows] = await db.promise().query(
+          "SELECT product_id, payout_percentage FROM dsa_product_payout_rates WHERE dsa_id = ? AND bank_id = ?",
+          [Number(dsa_id), Number(bank_id)]
+        );
+        for (const pr of prevRows) {
+          prevRatesMap[pr.product_id] = parseFloat(pr.payout_percentage) || 0;
+        }
+      } catch (prErr) {
+        console.warn("Audit lookup prev rates warning:", prErr.message);
+      }
+
+      // 5. Update / Insert custom rates
+      const productIds = Object.keys(rates);
+      const changesList = [];
+      const prevList = [];
+      const newList = [];
+
+      for (const prodId of productIds) {
+        const numRate = parseFloat(rates[prodId]) || 0;
+        await db.promise().query(
+          `INSERT INTO dsa_product_payout_rates (dsa_id, bank_id, product_id, payout_percentage)
+           VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE payout_percentage = VALUES(payout_percentage)`,
+          [Number(dsa_id), Number(bank_id), Number(prodId), numRate]
+        );
+
+        const prodName = productNameMap[prodId] || `Product #${prodId}`;
+        const prevVal = prevRatesMap[prodId] !== undefined ? `${prevRatesMap[prodId]}%` : "Not Configured";
+        const newVal = `${numRate}%`;
+
+        changesList.push(`${prodName}: ${numRate}%`);
+        prevList.push(`${prodName}: ${prevVal}`);
+        newList.push(`${prodName}: ${newVal}`);
+      }
+
+      // 6. Non-blocking Audit Log using original DSA Code
+      logAuditAction({
+        req,
+        actionType: "DSA_PAYOUT_RATE_UPDATED",
+        module: "Commission & Payments",
+        entityId: dsaCode,
+        entityName: `${dsaCode} • ${bankName}`,
+        summary: `Configured payout rates for DSA partner '${dsaCode}' on ${bankName} (${changesList.length} products).`,
+        details: `Rates: ${changesList.join(", ")}`,
+        previousValue: prevList.join("; "),
+        newValue: newList.join("; "),
+      });
+
+      return res.status(200).json({ status: true, message: "DSA payout rates saved successfully." });
+    } catch (error) {
+      console.error("SAVE DSA PAYOUT RATES ERROR:", error);
+      return res.status(500).json({ status: false, message: "Failed to save DSA payout rates.", error: error.message });
+    }
+  }
+);
+
+// =========================================================================
+// 9. GET SPECIFIC DSA PAYOUT RATE (For Customer Application & Verification)
+// GET /api/dsa/payout-rate?bank_id=...&product_id=...&dsa_id=...
+// =========================================================================
+router.get(
+  "/dsa/payout-rate",
+  authenticateAndAuthorize(),
+  async (req, res) => {
+    try {
+      const { bank_id, product_id } = req.query;
+      const dsaId = req.query.dsa_id ? Number(req.query.dsa_id) : (req.user?.id || req.user?.dsa_id);
+
+      if (!dsaId || !bank_id || !product_id) {
+        return res.status(400).json({
+          status: false,
+          message: "dsa_id, bank_id, and product_id are required.",
+          payout_percentage: 0,
+          is_configured: false,
+        });
+      }
+
+      try {
+        const [rows] = await db.promise().query(
+          "SELECT payout_percentage FROM dsa_product_payout_rates WHERE dsa_id = ? AND bank_id = ? AND product_id = ? LIMIT 1",
+          [Number(dsaId), Number(bank_id), Number(product_id)]
+        );
+
+        if (rows.length > 0) {
+          const rate = parseFloat(rows[0].payout_percentage) || 0;
+          return res.status(200).json({
+            status: true,
+            payout_percentage: rate,
+            is_configured: rate > 0,
+          });
+        }
+
+        return res.status(200).json({
+          status: true,
+          payout_percentage: 0,
+          is_configured: false,
+        });
+      } catch (dbErr) {
+        if (dbErr.code === "ER_NO_SUCH_TABLE") {
+          return res.status(200).json({ status: true, payout_percentage: 0, is_configured: false });
+        }
+        throw dbErr;
+      }
+    } catch (error) {
+      console.error("GET DSA PAYOUT RATE ERROR:", error);
+      return res.status(500).json({ status: false, message: "Failed to check DSA payout rate.", error: error.message });
+    }
+  }
+);
+
 module.exports = router;
